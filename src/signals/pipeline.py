@@ -251,6 +251,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
     parser.add_argument("--max-position-usd", type=float, default=1_000.0)
     parser.add_argument("--daily-loss-limit-usd", type=float, default=200.0)
+    parser.add_argument("--cost-bps", type=float, default=5.0)
+    parser.add_argument("--dead-zone-bps", type=float, default=2.0)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -260,6 +262,8 @@ def main() -> None:
         model_kind=args.model,
         db_path=args.db,
         dry_run=args.dry_run,
+        cost_bps=args.cost_bps,
+        dead_zone_bps=args.dead_zone_bps,
         limits=RiskLimits(
             max_position_usd=args.max_position_usd,
             daily_loss_limit_usd=args.daily_loss_limit_usd,
