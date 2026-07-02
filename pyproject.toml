@@ -35,7 +35,6 @@ dev = [
 analysis = [
     "pandas>=2.2",
     "matplotlib>=3.8",
-    "jupyter>=1.0",
 ]
 # Optional JIT for numeric feature math.
 speed = ["numba>=0.59"]

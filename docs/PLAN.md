@@ -58,30 +58,31 @@ covered by the mini-server tests and was exercised live during the SSL failure.)
 
 ---
 
-## Phase 2 — Streaming feature engine  `[ ]`
+## Phase 2 — Streaming feature engine  `[x]`
 
 Goal: O(1)-per-tick features, each verified against a naive full-recompute reference.
 
-- [ ] `features/online_stats.py`
-  - [ ] `Welford` running mean/variance (rolling & expanding variants)
-  - [ ] `EMA` O(1) update; `RunningSMA` via deque + running sum (add new / subtract expiring)
-  - [ ] `RunningZScore` online normalization (running mean/std, not fit-once)
-- [ ] `features/engine.py` — orchestrates per-symbol feature vector from ring buffers:
-  - [ ] Lags: last N prices/returns
-  - [ ] Momentum: % change over k lags
-  - [ ] Volatility: Welford std over window
-  - [ ] MAs: EMA(s) + SMA(s)
-  - [ ] Microstructure (if available): bid-ask spread, trade size, order imbalance
-  - [ ] Online z-normalization of all outputs
-- [ ] `tests/test_online_stats.py` — assert incremental == naive numpy recompute (atol)
-- [ ] `tests/test_engine.py` — feature-vector snapshot vs reference on a fixed tick sequence
+- [x] `features/online_stats.py`
+  - [x] `Welford` running mean/variance (expanding + rolling via West's O(1) removal)
+  - [x] `EMA` O(1) update; `RunningSMA` via deque + running sum (add new / subtract expiring)
+  - [x] `RunningZScore` online normalization (running mean/std, not fit-once; warmup-gated)
+- [x] `features/engine.py` — per-symbol vector, quote-mid keyed (per Phase 1 finding):
+  - [x] Lag returns over k quote-mid lags (ring buffer)
+  - [x] Momentum: % change over k lags (= the lag-return features)
+  - [x] Volatility: rolling Welford std of 1-lag returns
+  - [x] MAs: EMA fast/slow spread normalized by mid
+  - [x] Microstructure: spread bps, book imbalance, signed trade-flow EMA
+  - [x] Online z-normalization of all outputs
+- [x] `tests/test_online_stats.py` — incremental == naive numpy recompute (incl. O(1) microbench)
+- [x] `tests/test_engine.py` — hand-computed reference values, warmup gating, determinism
 
 **Done when:** all incremental calcs match naive recompute within tolerance, and one
-feature update is O(1) (microbenchmark flat as window grows).
+feature update is O(1) (microbenchmark flat as window grows). ✅
 
-**Key decisions**
-- Which normalization warmup guard (min samples before emitting z-scores).
-- NaN/first-tick handling policy.
+**Decisions taken**
+- Warmup: no emission before 64 valid quotes; per-feature z-scores emit 0.0 for their
+  first 30 samples (degenerate std also → 0.0). No NaNs by construction.
+- Degenerate quotes (crossed / zero mid) skipped entirely.
 
 ---
 
@@ -90,24 +91,30 @@ feature update is O(1) (microbenchmark flat as window grows).
 Goal: River model that predicts short-horizon forward return; learns after the outcome
 is observed. Offline-evaluated by replaying stored ticks.
 
-- [ ] `model/labels.py` — prediction queue: emit prediction at `t`, match to realized
-      forward return at `t+k`, then `learn_one()`. **Strictly no lookahead.**
-- [ ] `model/online.py` — wrap `river.linear_model` (start) and
-      `river.tree.HoeffdingTreeRegressor` (compare); `predict_one` / `learn_one`
-- [ ] Target: forward return `t → t+k`. Regression first; classification (up/down/flat
-      with dead-zone) as an alternative.
-- [ ] Rolling metrics (River `metrics`): MAE, R², directional accuracy — walk-forward only
-- [ ] `scripts/replay.py` — feed stored ticks through the **exact same** async pipeline
-      to catch train/serve skew
+- [x] `model/labels.py` — LabelQueue: time-based horizon (ns); label = first observed
+      price after `t+horizon` (exactly what live sees). **Strictly no lookahead**;
+      out-of-order additions rejected.
+- [x] `model/online.py` — River `LinearRegression` (default) and
+      `HoeffdingTreeRegressor` behind one wrapper; `predict_one` / `learn_one`
+- [x] Target: forward simple return over `horizon_s` (default 10s). Regression first;
+      classification with dead-zone deferred as a comparison.
+- [x] Walk-forward metrics: MAE vs always-zero baseline + rolling directional accuracy
+- [x] `core.SymbolPipeline` — learn-then-predict per quote; shared verbatim by replay
+      and live (the train/serve-skew guard)
+- [x] `scripts/replay.py` — replay stored events through the same core; per-quartile
+      walk-forward metrics
+- [ ] Replay evaluation on a recorded live session (recording in progress)
 
 **Done when:** model trains online over a historical replay with no lookahead, and
 rolling directional accuracy is logged. (Beating a naive baseline is a research goal,
 not a gate.)
 
-**Key decisions**
-- Horizon k (ticks vs seconds); start k = a few seconds.
-- Regression vs classification target for v1.
-- Feature/target scaling handled by River pipeline vs our online z-score.
+**Decisions taken**
+- Horizon: time-based (default 10s), not event-count — quotes arrive irregularly and
+  feed latency p99 ~300ms makes sub-second horizons untradeable.
+- Regression on forward return for v1.
+- Scaling: our online z-scores (engine) — River pipeline scalers not used, so replay
+  and live normalize identically.
 
 ---
 
@@ -115,20 +122,30 @@ not a gate.)
 
 Goal: turn predictions into risk-managed paper orders.
 
-- [ ] `signal/policy.py` — predicted return → signal only if it clears a threshold that
-      covers estimated transaction cost + spread (avoid overtrading on noise)
-- [ ] `signal/risk.py` — position sizing (fixed-fractional or vol-scaled, capped);
-      hard controls: max position, daily-loss circuit breaker, max open positions
-- [ ] `execution/alpaca_exec.py` — route orders via Alpaca **paper** API; track fills/positions
-- [ ] Kill-switch + graceful shutdown flattening positions
-- [ ] Wire full pipeline in `pipeline.py` (ingest → features → model → signal → exec → log)
+- [x] `signal/policy.py` — signal only when |predicted| > fee + half-spread + dead-zone
+- [x] `signal/risk.py` — fixed-fractional sizing (optional vol scaling), position cap,
+      min-notional floor, max open positions, daily-loss circuit breaker
+- [x] `signal/positions.py` — long-only book (Alpaca crypto is non-marginable): LONG
+      enters if flat, SHORT exits an open long; realized PnL feeds the breaker
+- [x] `execution/alpaca_exec.py` — paper-only guard at construction; market orders in
+      threads (off critical path); fill polling; flatten_all kill-switch
+- [x] Kill-switch + graceful shutdown flattening positions (`flatten_on_exit`)
+- [x] Wire full pipeline in `pipeline.py` (ingest → core → policy → book → exec → tap → log)
+- [x] Live order lifecycle verified: buy → fill → sell → flat on the paper endpoint
 
 **Done when:** end-to-end paper loop places, fills, and closes orders on the crypto
-paper stream, and all risk limits are enforced (unit-tested).
+paper stream, and all risk limits are enforced (unit-tested). ✅ (limits unit-tested;
+end-to-end order flow verified via `scripts/paper_order_check.py`; full-loop live run
+is the Phase 6 gate)
 
-**Key decisions**
-- Cost model assumptions (spread + fees) for the threshold.
-- Sizing scheme + caps.
+**Decisions taken**
+- Cost model: `cost_bps=5` + half observed spread + `dead_zone_bps=2`. Measured real
+  round-trip cost on BTC/USD paper: **~10.5 bps** (spread + slippage) — the default
+  threshold (~12 bps at 10 bps spread) is calibrated to that reality.
+- Sizing: 1% of equity per entry, capped at $1000 notional, $10 min; vol scaling
+  available but off by default.
+- Gotcha handled: Alpaca charges crypto buy fees **in the asset**, so position <
+  filled qty; exits clamp to the actual held quantity.
 
 ---
 
@@ -136,12 +153,15 @@ paper stream, and all risk limits are enforced (unit-tested).
 
 Offline only — pandas/matplotlib allowed here.
 
-- [ ] `storage/coldstore.py` — async append of raw ticks + predictions + orders to
-      DuckDB/SQLite (never read from disk in the live loop)
-- [ ] Reporting notebook/script: PnL, hit rate, latency histograms, feature drift
-- [ ] Latency instrumentation surfaced against the budget (see ARCHITECTURE.md)
+- [x] `storage/coldstore.py` — batched async DuckDB appends (built early: Phase 3's
+      replay depends on it); tail-flush on cancellation; never read in the live loop
+- [x] `scripts/report.py`: event counts, walk-forward prediction quality by quartile,
+      PnL/hit-rate per round trip, latency histogram, price+orders chart → PNG
+- [x] Latency instrumentation: per-quote `proc_us` logged with every prediction and
+      surfaced in the status loop + report (budget: <15ms features+model)
 
 **Done when:** a run produces a durable log queryable offline and a basic report.
+(✅ pending exercise on the Phase 6 run output)
 
 ---
 
