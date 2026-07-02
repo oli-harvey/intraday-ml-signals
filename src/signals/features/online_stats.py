@@ -104,10 +104,14 @@ class RunningZScore:
     """Online z-normalization using a running mean/std (not fit-once).
 
     Stats are updated with x first, then the z-score is returned; emits 0.0 until
-    `warmup` samples have been seen (or while std is degenerate)."""
+    `warmup` samples have been seen (or while std is degenerate). Output is clipped
+    to +/-clip: when a feature's running std is momentarily tiny, the raw z-score
+    can spike by orders of magnitude, which sends SGD-style learners into a
+    positive-feedback divergence (observed on replay with the linear model)."""
 
-    def __init__(self, window: int | None = None, warmup: int = 30) -> None:
+    def __init__(self, window: int | None = None, warmup: int = 30, clip: float = 8.0) -> None:
         self.warmup = max(2, warmup)
+        self.clip = clip
         self._w = Welford(window)
 
     def normalize(self, x: float) -> float:
@@ -117,4 +121,5 @@ class RunningZScore:
         std = self._w.std
         if std <= 0.0:
             return 0.0
-        return (x - self._w.mean) / std
+        z = (x - self._w.mean) / std
+        return max(-self.clip, min(self.clip, z))

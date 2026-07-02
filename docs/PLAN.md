@@ -103,11 +103,22 @@ is observed. Offline-evaluated by replaying stored ticks.
       and live (the train/serve-skew guard)
 - [x] `scripts/replay.py` — replay stored events through the same core; per-quartile
       walk-forward metrics
-- [ ] Replay evaluation on a recorded live session (recording in progress)
+- [x] Replay evaluation on a recorded live session (30 min BTC/USD, 4049 quotes)
 
 **Done when:** model trains online over a historical replay with no lookahead, and
 rolling directional accuracy is logged. (Beating a naive baseline is a research goal,
-not a gate.)
+not a gate.) ✅
+
+**Replay results (2026-07-02, 30-min BTC/USD session, 10s horizon, 3962 predictions)**
+- Latency: p50 ~9µs, p99 <0.5ms per quote (feature+inference) — far under budget.
+- Found & fixed: unclipped online z-scores can spike when a feature's running std is
+  momentarily tiny → SGD positive-feedback divergence (linear model MAE exploded to
+  2.7 vs targets ~3e-4). Z-scores now clipped to ±8 (regression-tested).
+- Post-fix: linear dir_acc 0.60 / MAE edge −21.5%; Hoeffding dir_acc 0.63 / edge −4.1%.
+- **Honest read:** direction better than chance (likely partly quote-mid persistence,
+  not tradeable edge), magnitude overestimated, MAE does not beat the zero baseline.
+  Round-trip cost ~10.5 bps vs typical 10s moves ~3 bps → no economic edge shown.
+  30 min is a tiny sample; treat as plumbing validation only.
 
 **Decisions taken**
 - Horizon: time-based (default 10s), not event-count — quotes arrive irregularly and

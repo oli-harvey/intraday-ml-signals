@@ -96,3 +96,15 @@ def test_update_cost_is_o1_not_o_window() -> None:
 
     small, large = cost(64), cost(64 * 128)
     assert large < small * 5, f"update cost grew with window: {small:.4f}s -> {large:.4f}s"
+
+
+def test_zscore_clips_spikes_from_degenerate_std() -> None:
+    """A near-constant series then a jump must not emit unbounded z-scores."""
+    z = RunningZScore(warmup=2, clip=8.0)
+    for _ in range(100):
+        z.normalize(1.0)
+    assert z.normalize(1e6) == 8.0  # raw z would be ~10 -> clipped
+    # invariant: no sequence may ever produce |z| > clip
+    rng = np.random.default_rng(0)
+    for x in rng.normal(0, 1e5, size=500):
+        assert abs(z.normalize(float(x))) <= 8.0
