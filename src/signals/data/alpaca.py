@@ -19,7 +19,7 @@ import logging
 import ssl
 import time
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import certifi
 from websockets.asyncio.client import connect
@@ -229,7 +229,7 @@ class AlpacaSource(DataSource):
         from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-        start = datetime.now(timezone.utc) - timedelta(seconds=lookback_s)
+        start = datetime.now(UTC) - timedelta(seconds=lookback_s)
         timeframe = TimeFrame(resolution_s // 60, TimeFrameUnit.Minute)
         if self.market == "crypto":
             crypto = CryptoHistoricalDataClient(self.config.api_key, self.config.secret_key)
