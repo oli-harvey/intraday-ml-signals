@@ -12,8 +12,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] Repo + directory skeleton mirroring the pipeline stages
 - [x] `pyproject.toml` with hot-path deps (no pandas), dev extras (pytest, ruff, mypy)
 - [x] `.gitignore`, `.env.example`
-- [ ] Create Alpaca **paper** account; put keys in `.env` (never commit)
-- [ ] `pip install -e ".[dev]"`; confirm `river`, `alpaca-py`, `websockets`, `numpy`, `duckdb` import
+- [x] Create Alpaca **paper** account; put keys in `.env` (never commit) — verified: account ACTIVE
+- [x] `uv venv` + `uv pip install -e ".[dev]"`; `river`, `alpaca-py`, `websockets`, `numpy`, `duckdb` import OK
+      (env management is **uv only** — no global installs)
+- [x] Guard test enforcing "no pandas import under `src/signals/`" (pandas arrives transitively via alpaca-py)
 - [ ] Pre-commit / CI check running `ruff` + `pytest`
 
 **Done when:** clean checkout installs and `pytest` runs (even with 0 tests).

@@ -43,10 +43,9 @@ Modules currently contain interface/skeleton stubs only.
 ## Quickstart (once implemented)
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env        # add your Alpaca paper keys
-python -m signals.pipeline --symbols BTC/USD --paper   # crypto works 24/7 for testing
+uv venv && uv pip install -e ".[dev]"   # uv only — no global installs
+cp .env.example .env                    # add your Alpaca paper keys
+uv run python -m signals.pipeline --symbols BTC/USD --paper   # crypto works 24/7 for testing
 ```
 
 ## Layout
