@@ -1,29 +1,275 @@
 """asyncio orchestration — wires the stages together via bounded queues.
 
-    ingest -> features -> model -> signal/risk -> execution
-                  \\------------ tap -------------> cold store
+    ingest -> [consumer: SymbolPipeline -> policy -> positions/risk -> executor]
+                  \\------------------ tap ------------------> cold store
 
-Each stage is an async task consuming one queue and producing to the next. Bounded
-queues provide backpressure. The SAME wiring is used by scripts/replay.py so the
-replay path and the live path share code. Phase 4 wires it end-to-end — see docs/PLAN.md.
+The consumer is single-task so per-symbol state stays serial (no locks). Order
+submission runs in fire-and-forget tasks off the critical path; a symbol with an
+in-flight order is locked against re-entry until the fill is booked. The cold
+store tap never blocks: if its queue is full, records are dropped and counted.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from .config import AlpacaConfig, load_alpaca_config
+from .core import SymbolPipeline
+from .data.alpaca import AlpacaSource
+from .data.base import DataSource
+from .data.ingest import IngestStage
+from .data.schema import MarketEvent
+from .execution.alpaca_exec import PaperExecutor
+from .features.engine import FeatureEngine
+from .model.online import OnlineModel
+from .signal.policy import SignalPolicy
+from .signal.positions import OrderIntent, PositionBook
+from .signal.risk import RiskLimits, RiskManager
+from .storage.coldstore import ColdStore, LogOrder, LogPrediction, LogRecord, LogResolution
+
+log = logging.getLogger(__name__)
 
 
-async def run(symbols: list[str], paper: bool = True) -> None:
-    raise NotImplementedError("Wired end-to-end in Phase 4; stages built Phases 1-3.")
+@dataclass
+class PipelineConfig:
+    symbols: list[str] = field(default_factory=lambda: ["BTC/USD"])
+    horizon_s: float = 10.0
+    model_kind: str = "linear"
+    cost_bps: float = 5.0
+    dead_zone_bps: float = 2.0
+    limits: RiskLimits = field(default_factory=RiskLimits)
+    db_path: str = "data/live.duckdb"
+    dry_run: bool = False  # predictions + signals, but no orders
+    flatten_on_exit: bool = True
+    status_every_s: float = 30.0
+    equity_refresh_s: float = 60.0
+
+
+class Pipeline:
+    def __init__(
+        self,
+        config: PipelineConfig,
+        alpaca: AlpacaConfig,
+        source: DataSource | None = None,
+        executor: PaperExecutor | None = None,
+    ) -> None:
+        self.config = config
+        self.source = source or AlpacaSource(alpaca, market="crypto", subscribe_quotes=True)
+        self.executor = executor or (None if config.dry_run else PaperExecutor(alpaca))
+        self.policy = SignalPolicy(config.cost_bps, config.dead_zone_bps)
+        self.risk = RiskManager(config.limits)
+        self.book = PositionBook(self.risk)
+        self.pipes = {
+            s: SymbolPipeline(
+                s,
+                FeatureEngine(),
+                OnlineModel(kind=config.model_kind),
+                horizon_ns=int(config.horizon_s * 1e9),
+            )
+            for s in config.symbols
+        }
+        self.store = ColdStore(config.db_path)
+        self.tap: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=50_000)
+        self.tap_dropped = 0
+        self.equity = 0.0
+        self.orders_submitted = 0
+        self.order_errors = 0
+        self.signals_actioned = 0
+        self._inflight: set[str] = set()
+        self._order_tasks: set[asyncio.Task] = set()
+        self._proc_us: deque[float] = deque(maxlen=5000)
+
+    # ---- logging tap (never blocks the hot loop) ----
+    def _tap(self, record: LogRecord) -> None:
+        try:
+            self.tap.put_nowait(record)
+        except asyncio.QueueFull:
+            self.tap_dropped += 1
+
+    # ---- order path (off the critical loop) ----
+    async def _execute(self, intent: OrderIntent) -> None:
+        assert self.executor is not None
+        try:
+            qty = intent.qty
+            if intent.side == "sell":
+                # Alpaca takes crypto buy fees in the asset: actual position is
+                # slightly below the buy's filled qty. Clamp to what we hold.
+                held = await self.executor.position_qty(intent.symbol)
+                if held <= 0:
+                    self.book.on_fill(intent.symbol, "sell", 0.0, 0.0)  # de-sync guard
+                    return
+                qty = min(qty, held)
+            result = await self.executor.market_order(intent.symbol, intent.side, qty)
+            if result.status not in ("filled", "canceled", "rejected"):
+                result = await self.executor.poll_fill(result.order_id)
+            self.orders_submitted += 1
+            if result.status == "filled" and result.filled_qty > 0:
+                realized = self.book.on_fill(
+                    intent.symbol, intent.side, result.filled_qty, result.filled_avg_price
+                )
+                note = f"{intent.reason}; realized={realized:.2f}"
+            else:
+                note = f"{intent.reason}; NOT FILLED"
+                log.warning("order not filled: %s %s", intent, result)
+            self._tap(
+                LogOrder(
+                    symbol=intent.symbol,
+                    ts_ns=time.time_ns(),
+                    action=intent.side,
+                    qty=result.filled_qty or intent.qty,
+                    status=result.status,
+                    fill_price=result.filled_avg_price,
+                    note=note,
+                )
+            )
+        except Exception:
+            self.order_errors += 1
+            log.exception("order failed: %s", intent)
+        finally:
+            self._inflight.discard(intent.symbol)
+
+    def _submit(self, intent: OrderIntent) -> None:
+        self._inflight.add(intent.symbol)
+        task = asyncio.create_task(self._execute(intent))
+        self._order_tasks.add(task)
+        task.add_done_callback(self._order_tasks.discard)
+
+    # ---- hot loop ----
+    def _on_event(self, event: MarketEvent) -> None:
+        self._tap(event)
+        pipe = self.pipes.get(event.symbol)
+        if pipe is None:
+            return
+        step = pipe.on_event(event)
+        for r in step.resolved:
+            self._tap(
+                LogResolution(event.symbol, r.ts_ns, r.resolved_ts_ns, r.prediction, r.realized)
+            )
+        pred = step.prediction
+        if pred is None:
+            return
+        self._proc_us.append(pred.proc_us)
+        self._tap(
+            LogPrediction(
+                pred.symbol, pred.ts_ns, pred.predicted, pred.mid, pred.spread_bps, pred.proc_us
+            )
+        )
+        signal = self.policy.decide(pred.symbol, pred.predicted, pred.spread_bps)
+        if signal.action.value == 0 or self.config.dry_run or self.executor is None:
+            return
+        if pred.symbol in self._inflight:
+            return  # order already working for this symbol
+        vol = pipe.features.last_raw.get("vol", 0.0)
+        intent = self.book.on_signal(signal, pred.mid, self.equity, vol)
+        if intent is not None:
+            self.signals_actioned += 1
+            self._submit(intent)
+
+    async def _consume(self, queue: asyncio.Queue[MarketEvent]) -> None:
+        while True:
+            self._on_event(await queue.get())
+
+    async def _status_loop(self, stage: IngestStage, started: float) -> None:
+        last_equity_refresh = 0.0
+        while True:
+            await asyncio.sleep(self.config.status_every_s)
+            now = time.monotonic()
+            refresh_due = now - last_equity_refresh > self.config.equity_refresh_s
+            if self.executor is not None and refresh_due:
+                with contextlib.suppress(Exception):
+                    self.equity = await self.executor.equity()
+                    last_equity_refresh = now
+            lat = np.array(self._proc_us) if self._proc_us else np.array([0.0])
+            metrics = {s: p.model.metrics() for s, p in self.pipes.items()}
+            summary = " | ".join(
+                f"{s}: n={m['n']:.0f} dir={m['directional_acc']:.2f}" for s, m in metrics.items()
+            )
+            print(
+                f"[+{now - started:6.0f}s] events={stage.events}"
+                f" proc_us p50={np.percentile(lat, 50):.0f} p99={np.percentile(lat, 99):.0f}"
+                f" | {summary} | pos={self.book.open_count} orders={self.orders_submitted}"
+                f" errs={self.order_errors} pnl_today={self.risk.realized_pnl_today:.2f}"
+                f" breaker={'TRIPPED' if self.risk.circuit_breaker_tripped else 'ok'}"
+                f" tap_drop={self.tap_dropped}",
+                flush=True,
+            )
+
+    async def run(self, duration_s: float | None = None) -> None:
+        await self.source.subscribe(self.config.symbols)
+        queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=10_000)
+        stage = IngestStage(self.source, queue)
+        if self.executor is not None:
+            self.equity = await self.executor.equity()
+            print(f"paper equity: {self.equity:.2f}")
+        started = time.monotonic()
+        tasks = [
+            asyncio.create_task(stage.run()),
+            asyncio.create_task(self._consume(queue)),
+            asyncio.create_task(self.store.run(self.tap)),
+            asyncio.create_task(self._status_loop(stage, started)),
+        ]
+        try:
+            if duration_s is None:
+                await asyncio.gather(*tasks)
+            else:
+                await asyncio.sleep(duration_s)
+        finally:
+            await self.source.close()
+            if self._order_tasks:  # let in-flight orders settle
+                await asyncio.wait(self._order_tasks, timeout=15)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if self.executor is not None and self.config.flatten_on_exit and self.book.open_count:
+                with contextlib.suppress(Exception):
+                    await self.executor.flatten_all()
+            await self.store.flush()
+            self.store.close()
+            print(
+                f"shutdown: events={stage.events} orders={self.orders_submitted}"
+                f" errors={self.order_errors} tap_dropped={self.tap_dropped}"
+            )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the live signal pipeline.")
+    parser = argparse.ArgumentParser(description="Run the live signal pipeline (paper only).")
     parser.add_argument("--symbols", nargs="+", default=["BTC/USD"])
-    parser.add_argument("--paper", action="store_true", default=True)
+    parser.add_argument(
+        "--duration", type=float, default=None, help="seconds; default: run forever"
+    )
+    parser.add_argument("--horizon-s", type=float, default=10.0)
+    parser.add_argument("--model", choices=["linear", "hoeffding"], default="linear")
+    parser.add_argument("--db", default="data/live.duckdb")
+    parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
+    parser.add_argument("--max-position-usd", type=float, default=1_000.0)
+    parser.add_argument("--daily-loss-limit-usd", type=float, default=200.0)
     args = parser.parse_args()
-    asyncio.run(run(args.symbols, args.paper))
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = PipelineConfig(
+        symbols=args.symbols,
+        horizon_s=args.horizon_s,
+        model_kind=args.model,
+        db_path=args.db,
+        dry_run=args.dry_run,
+        limits=RiskLimits(
+            max_position_usd=args.max_position_usd,
+            daily_loss_limit_usd=args.daily_loss_limit_usd,
+        ),
+    )
+    with contextlib.suppress(ImportError):
+        import uvloop
+
+        uvloop.install()
+    asyncio.run(Pipeline(config, load_alpaca_config()).run(args.duration))
 
 
 if __name__ == "__main__":
