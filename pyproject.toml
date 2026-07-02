@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intraday-ml-signals"
+version = "0.0.1"
+description = "Lightweight, low-latency online-learning intraday trade-signal engine (Alpaca paper)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Oli Harvey" }]
+
+# Hot-path dependencies only. NOTE: pandas is intentionally NOT a direct dependency.
+# (alpaca-py may pull it transitively; it must never be used in the live loop.)
+dependencies = [
+    "alpaca-py>=0.20",   # market data + paper trading (REST + WebSocket)
+    "river>=0.21",       # online / incremental ML
+    "numpy>=1.26",       # numeric feature math (ring buffers, online stats)
+    "websockets>=12",    # async WS ingest
+    "duckdb>=0.10",      # cold-path append storage for offline research
+    "python-dotenv>=1.0",# load Alpaca keys from .env
+    "uvloop>=0.19; sys_platform != 'win32'",  # faster asyncio event loop
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+# Offline analysis / reporting ONLY. Never import these under the hot path.
+analysis = [
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "jupyter>=1.0",
+]
+# Optional JIT for numeric feature math.
+speed = ["numba>=0.59"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

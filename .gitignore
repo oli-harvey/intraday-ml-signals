@@ -1,0 +1,30 @@
+# Secrets
+.env
+*.key
+
+# Data / cold store (never commit market data)
+*.duckdb
+*.sqlite
+*.sqlite3
+data/
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Notebooks / analysis
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
