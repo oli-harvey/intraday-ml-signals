@@ -22,25 +22,39 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
-## Phase 1 — Data ingestion + ring-buffer storage  `[ ]`
+## Phase 1 — Data ingestion + ring-buffer storage  `[x]`
 
 Goal: a running asyncio task that connects to Alpaca's WebSocket and pushes normalized
 tick events onto an `asyncio.Queue`, with a fixed-size in-memory ring buffer per symbol.
 
-- [ ] `data/base.py` — `DataSource` ABC: `subscribe(symbols)`, async iterator of `Tick`
-- [ ] `data/schema.py` — frozen `Tick`/`Quote`/`Bar` dataclasses (slots), monotonic timestamps
-- [ ] `data/alpaca.py` — Alpaca WS adapter (IEX free feed for equities; crypto stream 24/7)
-- [ ] `data/ringbuffer.py` — preallocated numpy circular arrays + `deque(maxlen=)`; O(1) push/read
-- [ ] REST backfill helper (historical bars/trades) to warm buffers on startup
-- [ ] Reconnect/backoff + heartbeat handling on the WS
-- [ ] Validate live against Alpaca sandbox/crypto stream (print tick rate, gaps)
+- [x] `data/base.py` — `DataSource` ABC; `stream()` owns connection/reconnect lifecycle
+- [x] `data/schema.py` — frozen `Tick`/`Quote`/`Bar` (slots) + `recv_ns` for latency instrumentation
+- [x] `data/alpaca.py` — WS adapter driving `websockets` directly; certifi CA bundle for wss
+- [x] `data/ringbuffer.py` — preallocated numpy circular arrays (int64 for epoch-ns!); O(1) push
+- [x] REST backfill helper (minute bars via alpaca-py in a thread; cold path)
+- [x] Reconnect/backoff (exponential + jitter, auth failures fatal) + websockets ping/pong
+      heartbeat — covered by tests against a local mini-Alpaca WS server
+- [x] Validate live against Alpaca crypto stream — 90s smoke + 10-min soak both PASS
 
 **Done when:** live crypto stream feeds the queue for ≥10 min with no unbounded memory
-growth, reconnects cleanly, and ring buffers hold the last N ticks correctly.
+growth, reconnects cleanly, and ring buffers hold the last N ticks correctly. ✅
+*(10-min soak 2026-07-02: zero reconnects needed, RSS flat 42→27MB, queue hwm 5/10000,
+buffer integrity + ts monotonicity verified for both symbols. Reconnect behaviour is
+covered by the mini-server tests and was exercised live during the SSL failure.)*
 
 **Key decisions**
 - Tick granularity: trades vs quotes vs 1s bars for v1 → *start with trades + 1s bars.*
 - Buffer depth N per feature horizon (start N=512).
+
+**Findings (2026-07-02 live validation, 10-min soak)**
+- Alpaca's crypto **trade** feed is thin (own-venue prints only): BTC 12 trades vs
+  3512 quotes in 10 min (max inter-trade gap 143s; ETH 366s!). **Quotes are the dense
+  stream** → Phase 2 features and the Phase 3 target should be built on quote **mids**;
+  trades become supplementary (size/side) features. SymbolBuffers needs a mid-price
+  ring updated from quotes.
+- Feed→local (exchange ts → our recv) latency: p50 ~32-38 ms, p99 108-307 ms. This is
+  upstream network/feed delay, *outside* our <50 ms tick→decision budget — but it bounds
+  how short a horizon can plausibly be traded: k must be ≫ feed delay.
 
 ---
 
