@@ -3,10 +3,11 @@
 *.key
 
 # Data / cold store (never commit market data)
+# NB: anchored to repo root — a bare "data/" would swallow src/signals/data/
 *.duckdb
 *.sqlite
 *.sqlite3
-data/
+/data/
 *.parquet
 
 # Python

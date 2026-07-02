@@ -18,6 +18,7 @@ dependencies = [
     "river>=0.21",       # online / incremental ML
     "numpy>=1.26",       # numeric feature math (ring buffers, online stats)
     "websockets>=12",    # async WS ingest
+    "certifi>=2024.2",   # CA bundle for wss (macOS Pythons lack system certs in OpenSSL)
     "duckdb>=0.10",      # cold-path append storage for offline research
     "python-dotenv>=1.0",# load Alpaca keys from .env
     "uvloop>=0.19; sys_platform != 'win32'",  # faster asyncio event loop
