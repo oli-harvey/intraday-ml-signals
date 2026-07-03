@@ -176,14 +176,33 @@ Offline only — pandas/matplotlib allowed here.
 
 ---
 
-## Phase 6 — Extended paper validation  `[ ]`
+## Phase 6 — Extended paper validation  `[~]`
 
-- [ ] Multi-session paper run; monitor stability, memory, reconnects
-- [ ] Walk-forward evaluation summary over the run
+- [x] Bounded live paper session (2026-07-03): full pipeline (ingest → features →
+      model → policy → risk → executor → cold store) against the live BTC/USD stream
+- [x] Walk-forward evaluation summary over the run (scripts/report.py)
+- [x] Order path fired in-pipeline (10-min demo, near-zero threshold, $100 cap):
+      signal → book → buy 0.001615 @ 61933.74 → exit clamped to 0.001611 actually held
+      (in-asset fee clamp verified live) → sell @ 61913.32 → realized −$0.03 booked
+      to the risk manager. 0 errors.
+- [ ] **Multi-session / multi-day paper run — outstanding operational task.** Launch:
+      `caffeinate -is .venv/bin/python -m signals.pipeline --symbols BTC/USD --db data/paper_$(date +%F).duckdb`
+      (caffeinate matters: macOS sleep freezes the monotonic clock and drops the WS)
 - [ ] Decision checklist before *any* real-capital consideration (small size, if ever)
 
 **Done when:** the pipeline runs unattended across multiple sessions without leaks,
 crashes, or risk-limit breaches, with performance tracked over a meaningful period.
+*(Not yet — one bounded session so far; the extended run is wall-clock work, not code.)*
+
+**Bounded session results (2026-07-03, BTC/USD, 10s horizon, Hoeffding)**
+- Machine slept mid-run (wall 42 min, awake ~13 min, 888 events) — accidental but
+  valuable resilience test: two real WS drops on sleep/wake, both reconnected in ~1.2s
+  with the model retaining state. Zero order errors, zero tap drops, breaker never hit.
+- 807 predictions, 791 resolved. Decision latency p50 83µs, p99 2.6ms (budget <15ms).
+- Quality by quartile: dir_acc 0.75/0.80/0.49/0.63; MAE edge vs zero −14/+29/−38/+12%.
+  Consistent with replay: unstable, sample far too small, no edge claim.
+- Zero orders: even the lowered ~3bps threshold exceeded every prediction — the
+  cost gate is doing exactly its job against a model with no demonstrated edge.
 
 ---
 

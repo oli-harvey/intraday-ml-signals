@@ -37,8 +37,16 @@ Stages are decoupled via `asyncio.Queue` so each is independently testable. See
 
 ## Status
 
-🚧 **Planning / scaffolding.** See [docs/PLAN.md](docs/PLAN.md) for the phased build.
-Modules currently contain interface/skeleton stubs only.
+✅ **Phases 0–5 built and live-validated; Phase 6 (extended paper validation) in
+progress.** See [docs/PLAN.md](docs/PLAN.md) for per-phase results and decisions.
+
+- Ingestion, features, online model, signal/risk, paper execution, cold-store
+  logging and offline reporting all working end-to-end against the live stream.
+- Decision latency ~10–80µs per quote (budget <15ms). Survives real WS drops.
+- **No economic edge demonstrated** — direction-above-chance (~0.6–0.65) is likely
+  partly quote-mid persistence; magnitude doesn't beat a predict-zero baseline, and
+  round-trip costs (~10.5bps measured) dwarf typical 10s moves (~3bps). The model
+  layer is the research playground; the framework makes iterating on it cheap.
 
 ## Quickstart (once implemented)
 
