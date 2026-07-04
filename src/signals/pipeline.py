@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class PipelineConfig:
     symbols: list[str] = field(default_factory=lambda: ["BTC/USD"])
+    market: str = "crypto"  # "crypto" | "stocks" (stocks: US market hours only)
     horizon_s: float = 10.0
     model_kind: str = "linear"
     cost_bps: float = 5.0
@@ -62,7 +63,9 @@ class Pipeline:
         executor: PaperExecutor | None = None,
     ) -> None:
         self.config = config
-        self.source = source or AlpacaSource(alpaca, market="crypto", subscribe_quotes=True)
+        self.source = source or AlpacaSource(
+            alpaca, market=config.market, subscribe_quotes=True
+        )
         self.executor = executor or (None if config.dry_run else PaperExecutor(alpaca))
         self.policy = SignalPolicy(config.cost_bps, config.dead_zone_bps)
         self.risk = RiskManager(config.limits)
@@ -242,6 +245,7 @@ class Pipeline:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the live signal pipeline (paper only).")
     parser.add_argument("--symbols", nargs="+", default=["BTC/USD"])
+    parser.add_argument("--market", choices=["crypto", "stocks"], default="crypto")
     parser.add_argument(
         "--duration", type=float, default=None, help="seconds; default: run forever"
     )
@@ -258,6 +262,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = PipelineConfig(
         symbols=args.symbols,
+        market=args.market,
         horizon_s=args.horizon_s,
         model_kind=args.model,
         db_path=args.db,

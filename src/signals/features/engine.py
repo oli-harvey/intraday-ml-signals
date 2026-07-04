@@ -25,6 +25,8 @@ class FeatureConfig:
     zscore_window: int = 1024  # rolling normalization horizon
     zscore_warmup: int = 30
     flow_alpha: float = 0.1  # EMA of signed trade size
+    uptick_alpha: float = 0.1  # EMA of sign(mid change): short-term persistence
+    dt_alpha: float = 0.1  # EMA of quote inter-arrival seconds: activity regime
     warmup_quotes: int = 64  # emit nothing before this many valid quotes
     mid_depth: int = field(init=False, default=0)  # derived; see __post_init__
 
@@ -43,6 +45,9 @@ class FeatureEngine:
         self._ema_slow = EMA(c.ema_slow_alpha)
         self._vol = Welford(window=c.vol_window)
         self._flow = EMA(c.flow_alpha)
+        self._uptick = EMA(c.uptick_alpha)
+        self._dt = EMA(c.dt_alpha)
+        self._prev_ts_ns = 0
         self._z: dict[str, RunningZScore] = {}
         self._quotes_seen = 0
         self.last_raw: dict[str, float] = {}  # pre-normalization values (tests/debug)
@@ -72,7 +77,13 @@ class FeatureEngine:
         c = self.config
         if len(self._mids) >= 1:
             prev = float(self._mids.latest())
-            self._vol.update(mid / prev - 1.0)
+            r1 = mid / prev - 1.0
+            self._vol.update(r1)
+            if r1 != 0.0:  # persistence of mid direction (unchanged mids carry no sign)
+                self._uptick.update(1.0 if r1 > 0 else -1.0)
+        if self._prev_ts_ns:
+            self._dt.update((event.ts_ns - self._prev_ts_ns) / 1e9)
+        self._prev_ts_ns = event.ts_ns
         ema_fast = self._ema_fast.update(mid)
         ema_slow = self._ema_slow.update(mid)
         self._mids.push(mid)
@@ -92,6 +103,15 @@ class FeatureEngine:
         total_size = event.bid_size + event.ask_size
         raw["imbalance"] = (event.bid_size - event.ask_size) / total_size if total_size else 0.0
         raw["flow"] = self._flow.value if self._flow.value is not None else 0.0
+        # Microprice (size-weighted quote): where the book is "leaning". A large bid
+        # size pushes fair value toward the ask. Classic next-mid-move predictor.
+        if total_size > 0:
+            microprice = (event.bid_size * event.ask + event.ask_size * event.bid) / total_size
+            raw["micro_bps"] = (microprice - mid) / mid * 1e4
+        else:
+            raw["micro_bps"] = 0.0
+        raw["uptick"] = self._uptick.value if self._uptick.value is not None else 0.0
+        raw["dt_s"] = self._dt.value if self._dt.value is not None else 0.0
 
         self.last_raw = raw
         return {name: self._znorm(name, value) for name, value in raw.items()}

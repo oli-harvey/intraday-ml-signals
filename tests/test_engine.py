@@ -34,6 +34,7 @@ def test_warmup_gating_then_emits() -> None:
     assert emitted, "engine never warmed up"
     expected_keys = {
         "ret_1", "ret_2", "ret_4", "ema_spread", "vol", "spread_bps", "imbalance", "flow",
+        "micro_bps", "uptick", "dt_s",
     }
     assert set(emitted[0].keys()) == expected_keys
     assert all(np.isfinite(list(v.values())).all() for v in emitted)
@@ -51,6 +52,9 @@ def test_raw_features_match_hand_calc() -> None:
     assert raw["ret_4"] == pytest.approx(106.0 / 103.0 - 1.0)
     assert raw["spread_bps"] == pytest.approx(4.0 / 106.0 * 1e4)
     assert raw["imbalance"] == pytest.approx((3.0 - 1.0) / 4.0)
+    # microprice: bid=104, ask=108, bid_size=3, ask_size=1
+    # -> (3*108 + 1*104)/4 = 107 -> offset (107-106)/106 in bps
+    assert raw["micro_bps"] == pytest.approx((107.0 - 106.0) / 106.0 * 1e4)
     # rolling vol of 1-lag returns vs numpy
     rets = np.diff(mids) / np.array(mids[:-1])
     assert raw["vol"] == pytest.approx(rets[-CFG.vol_window :].std(), abs=1e-12)
