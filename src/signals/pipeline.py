@@ -182,9 +182,15 @@ class Pipeline:
 
     async def _status_loop(self, stage: IngestStage, started: float) -> None:
         last_equity_refresh = 0.0
+        current_day = time.gmtime().tm_yday
         while True:
             await asyncio.sleep(self.config.status_every_s)
             now = time.monotonic()
+            day = time.gmtime().tm_yday
+            if day != current_day:  # UTC date rollover: daily loss limit resets
+                current_day = day
+                self.risk.reset_day()
+                log.info("new UTC day: daily-loss circuit breaker reset")
             refresh_due = now - last_equity_refresh > self.config.equity_refresh_s
             if self.executor is not None and refresh_due:
                 with contextlib.suppress(Exception):

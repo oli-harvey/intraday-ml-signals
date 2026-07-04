@@ -20,6 +20,7 @@ class Pending:
     features: dict[str, float]
     ref_price: float
     prediction: float
+    spread_bps: float = 0.0  # spread at prediction time (cost simulation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class Resolved:
     features: dict[str, float]
     prediction: float
     realized: float  # simple return over >= horizon
+    spread_bps: float = 0.0
 
 
 class LabelQueue:
@@ -61,6 +63,7 @@ class LabelQueue:
                     features=p.features,
                     prediction=p.prediction,
                     realized=price / p.ref_price - 1.0,
+                    spread_bps=p.spread_bps,
                 )
             )
         return out

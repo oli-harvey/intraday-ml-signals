@@ -35,17 +35,72 @@ class SegmentScore:
         return (1 - self.mae / self.zero_mae) * 100 if self.zero_mae else float("nan")
 
 
+@dataclass(frozen=True, slots=True)
+class Row:
+    ts_ns: int
+    prediction: float
+    realized: float
+    persistence: float  # baseline forecast known at prediction time
+    spread_bps: float
+
+
+@dataclass
+class TradeSim:
+    """Cost-charged simulation of the live threshold policy over resolved rows."""
+
+    trades: int = 0
+    wins: int = 0
+    net_bps_sum: float = 0.0
+
+    @property
+    def hit_rate(self) -> float:
+        return self.wins / self.trades if self.trades else float("nan")
+
+    @property
+    def avg_net_bps(self) -> float:
+        return self.net_bps_sum / self.trades if self.trades else float("nan")
+
+
 @dataclass
 class SymbolScore:
     symbol: str
-    rows: list[tuple[float, float, float]] = field(default_factory=list)
-    # (prediction, realized, persistence_prediction)
+    rows: list[Row] = field(default_factory=list)
+
+    def simulate_trading(
+        self,
+        horizon_ns: int,
+        fee_bps: float = 5.0,
+        dead_zone_bps: float = 2.0,
+        allow_short: bool = True,
+    ) -> TradeSim:
+        """Sequential trades (one position at a time, held for the horizon),
+        entering only when |prediction| clears fee + half-spread + dead-zone —
+        the same rule as the live SignalPolicy. Round trip is charged the full
+        spread plus two fees. Exits at the realized horizon price."""
+        sim = TradeSim()
+        busy_until = -(10**18)
+        for r in self.rows:
+            if r.ts_ns < busy_until:
+                continue  # position still open from a previous signal
+            threshold = (fee_bps + 0.5 * r.spread_bps + dead_zone_bps) / 1e4
+            if r.prediction > threshold:
+                direction = 1.0
+            elif r.prediction < -threshold and allow_short:
+                direction = -1.0
+            else:
+                continue
+            net_bps = direction * r.realized * 1e4 - (r.spread_bps + 2 * fee_bps)
+            sim.trades += 1
+            sim.wins += 1 if net_bps > 0 else 0
+            sim.net_bps_sum += net_bps
+            busy_until = r.ts_ns + horizon_ns
+        return sim
 
     def segment(self, lo: int, hi: int) -> SegmentScore:
         seg = self.rows[lo:hi]
-        preds = np.array([r[0] for r in seg])
-        reals = np.array([r[1] for r in seg])
-        pers = np.array([r[2] for r in seg])
+        preds = np.array([r.prediction for r in seg])
+        reals = np.array([r.realized for r in seg])
+        pers = np.array([r.persistence for r in seg])
         nz = (preds != 0) & (reals != 0)
         nzp = (pers != 0) & (reals != 0)
         return SegmentScore(
@@ -76,6 +131,7 @@ class EvalResult:
     events: int
     proc_us_p50: float
     proc_us_p99: float
+    horizon_ns: int
     symbols: dict[str, SymbolScore]
 
 
@@ -122,7 +178,13 @@ async def evaluate(
             # persistence forecast = the last realized return known BEFORE this one
             # (in non-overlapping mode: the previous independent window's return)
             scores[event.symbol].rows.append(
-                (r.prediction, r.realized, last_realized[event.symbol])
+                Row(
+                    ts_ns=r.ts_ns,
+                    prediction=r.prediction,
+                    realized=r.realized,
+                    persistence=last_realized[event.symbol],
+                    spread_bps=r.spread_bps,
+                )
             )
             last_realized[event.symbol] = r.realized
             last_scored_ts[event.symbol] = r.ts_ns
@@ -132,5 +194,6 @@ async def evaluate(
         events=events,
         proc_us_p50=float(np.percentile(lat, 50)),
         proc_us_p99=float(np.percentile(lat, 99)),
+        horizon_ns=horizon_ns,
         symbols=scores,
     )

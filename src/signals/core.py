@@ -70,15 +70,22 @@ class SymbolPipeline:
         prediction: Prediction | None = None
         if vector is not None:
             predicted = self.model.predict_one(vector)
+            spread_bps = (event.ask - event.bid) / mid * 1e4
             self.labels.add(
-                Pending(ts_ns=event.ts_ns, features=vector, ref_price=mid, prediction=predicted)
+                Pending(
+                    ts_ns=event.ts_ns,
+                    features=vector,
+                    ref_price=mid,
+                    prediction=predicted,
+                    spread_bps=spread_bps,
+                )
             )
             prediction = Prediction(
                 symbol=self.symbol,
                 ts_ns=event.ts_ns,
                 predicted=predicted,
                 mid=mid,
-                spread_bps=(event.ask - event.bid) / mid * 1e4,
+                spread_bps=spread_bps,
                 proc_us=(time.perf_counter_ns() - started) / 1e3,
             )
         return StepResult(prediction, resolved)
