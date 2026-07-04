@@ -68,4 +68,18 @@ uv run python -m signals.pipeline --symbols BTC/USD --paper   # crypto works 24/
 | `src/signals/storage/` | Async cold-path logger (DuckDB/SQLite) |
 | `src/signals/pipeline.py` | asyncio orchestration wiring the queues together |
 | `scripts/replay.py` | Walk-forward replay of stored ticks through the live pipeline |
+| `scripts/experiment.py` | Grid: models × horizons × sessions, with cost-charged trade sim |
+| `notebooks/` | **Start here to learn the system** — executed teaching notebooks |
+| `docs/RESEARCH.md` | Findings, baselines, ranked research directions |
 | `tests/` | Correctness tests (incremental vs naive recompute) |
+
+## Notebooks (guided tour)
+
+1. [01_architecture_tour](notebooks/01_architecture_tour.ipynb) — pipeline stages,
+   ring buffers, the feature engine on real recorded quotes (incl. microprice)
+2. [02_online_learning_and_labels](notebooks/02_online_learning_and_labels.ipynb) —
+   online stats, no-lookahead labelling walkthrough, and the overlap trap
+3. [03_evaluation_playground](notebooks/03_evaluation_playground.ipynb) — run your
+   own experiments: quartile scoring, cost scenarios, feature ablations
+
+Open in VS Code (kernel = `.venv`) or `uv pip install -e ".[analysis]"` first.
