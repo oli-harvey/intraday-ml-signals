@@ -35,6 +35,9 @@ def test_warmup_gating_then_emits() -> None:
     expected_keys = {
         "ret_1", "ret_2", "ret_4", "ema_spread", "vol", "spread_bps", "imbalance", "flow",
         "micro_bps", "uptick", "dt_s",
+        # interactions (on by default)
+        "ret1_over_vol", "micro_over_spread",
+        "micro_x_uptick", "micro_x_ret1", "flow_x_imbalance",
     }
     assert set(emitted[0].keys()) == expected_keys
     assert all(np.isfinite(list(v.values())).all() for v in emitted)
@@ -83,3 +86,28 @@ def test_deterministic_across_reruns() -> None:
     a = [v for v in _feed(FeatureEngine(CFG), mids) if v is not None]
     b = [v for v in _feed(FeatureEngine(CFG), mids) if v is not None]
     assert a == b
+
+
+def test_interaction_ratios_match_hand_calc() -> None:
+    engine = FeatureEngine(CFG)
+    rng = np.random.default_rng(3)
+    mids = (60_000 + np.cumsum(rng.normal(0, 5, size=20))).tolist()
+    _feed(engine, mids)
+    raw = engine.last_raw
+    assert raw["ret1_over_vol"] == pytest.approx(raw["ret_1"] / (raw["vol"] + 1e-12))
+    assert raw["micro_over_spread"] == pytest.approx(
+        raw["micro_bps"] / (raw["spread_bps"] + 1e-6)
+    )
+
+
+def test_interactions_toggle_off() -> None:
+    cfg_off = FeatureConfig(
+        lag_returns=(1, 2, 4), warmup_quotes=8, zscore_warmup=4, vol_window=8,
+        interactions=False,
+    )
+    engine = FeatureEngine(cfg_off)
+    rng = np.random.default_rng(4)
+    mids = (60_000 + np.cumsum(rng.normal(0, 5, size=20))).tolist()
+    emitted = [v for v in _feed(engine, mids) if v is not None]
+    assert emitted
+    assert not any("_x_" in k or "_over_" in k for k in emitted[0])

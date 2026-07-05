@@ -102,3 +102,34 @@ in the literature. (Needs the multi-symbol data from the soak.)
 - [ ] Classification-with-dead-zone model variant
 - [ ] Meta-labeling gate
 - [ ] Cross-asset lead-lag feature
+
+## Findings log
+
+### 2026-07-05 — first powered evaluation (22.3h soak DB, 3,965 independent windows, BTC/USD, 10s)
+
+The killed 48h soak still delivered 54,604 BTC quotes across a full day/night cycle.
+Non-overlapping scoring, fee 0.2bps/side sim:
+
+| model | interactions | dir | persistence | d−p | MAE edge% | trades | net bps |
+|---|---|---|---|---|---|---|---|
+| hoeffding | on | 0.542 | 0.421 | **+0.121** | −8.7 | 15 | −137.7 |
+| hoeffding | off | 0.544 | 0.421 | +0.123 | −14.9 | 14 | −134.4 |
+| classifier | on | 0.513 | 0.421 | +0.092 | −2.9 | 0 | 0.0 |
+| classifier | off | 0.506 | 0.421 | +0.085 | −2.8 | 0 | 0.0 |
+
+**What it says:**
+1. **The model now clearly beats sign-persistence on independent windows**
+   (+9 to +12pts) — first real evidence the features carry short-horizon information
+   at scale (the 30-min session showed nothing: 0.496 vs 0.504).
+2. **BUT: 10s BTC mids are mean-reverting.** Persistence at 0.421 means the
+   *anti*-persistence rule ("fade the last window's move") scores 0.579 — which
+   still beats the model's 0.542. The dominant 10s structure is reversion, and the
+   model captures only part of it. Obvious next probes: an explicit fade baseline
+   in the eval table; horizon sweep (reversion at 10s may become momentum at 60s+);
+   a `ret_1`-sign-flipped feature is already representable, so more data may close it.
+3. **Interaction features: neutral so far.** Direction unchanged (±0.002);
+   hoeffding's MAE calibration improved (−8.7 vs −14.9 edge). Kept (cheap, and
+   product-confirmation terms should matter more for tree splits with more data),
+   but no lift claimed.
+4. Economics unchanged: sims negative at both cost scenarios; classifier still
+   correctly abstains. No tradeable edge demonstrated.

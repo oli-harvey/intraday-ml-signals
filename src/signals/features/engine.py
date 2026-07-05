@@ -27,6 +27,7 @@ class FeatureConfig:
     flow_alpha: float = 0.1  # EMA of signed trade size
     uptick_alpha: float = 0.1  # EMA of sign(mid change): short-term persistence
     dt_alpha: float = 0.1  # EMA of quote inter-arrival seconds: activity regime
+    interactions: bool = True  # cross terms between base features (see update())
     warmup_quotes: int = 64  # emit nothing before this many valid quotes
     mid_depth: int = field(init=False, default=0)  # derived; see __post_init__
 
@@ -113,5 +114,29 @@ class FeatureEngine:
         raw["uptick"] = self._uptick.value if self._uptick.value is not None else 0.0
         raw["dt_s"] = self._dt.value if self._dt.value is not None else 0.0
 
+        if c.interactions:
+            # Ratio interactions on raw values (each has a natural denominator):
+            # - vol-normalized momentum: a 2bps move in a quiet regime is signal,
+            #   the same move in a storm is noise (t-statistic of the last move).
+            # - lean/spread: microprice offset as a fraction of the spread — a
+            #   half-spread lean is the book shouting regardless of spread width.
+            raw["ret1_over_vol"] = raw["ret_1"] / (raw["vol"] + 1e-12)
+            raw["micro_over_spread"] = raw["micro_bps"] / (raw["spread_bps"] + 1e-6)
+
         self.last_raw = raw
-        return {name: self._znorm(name, value) for name, value in raw.items()}
+        z = {name: self._znorm(name, value) for name, value in raw.items()}
+
+        if c.interactions:
+            # Product interactions on the z-scored components (dimensionless,
+            # centered): the product is positive when the two signals AGREE in
+            # sign — confirmation — and negative on disagreement. Re-z-normalized
+            # so the model sees a calibrated, clipped input like everything else.
+            for name, a, b in (
+                ("micro_x_uptick", "micro_bps", "uptick"),  # lean confirmed by tape
+                ("micro_x_ret1", "micro_bps", "ret_1"),  # lean confirmed by last move
+                ("flow_x_imbalance", "flow", "imbalance"),  # aggressors + book agree
+            ):
+                product = z[a] * z[b]
+                self.last_raw[name] = product
+                z[name] = self._znorm(name, product)
+        return z

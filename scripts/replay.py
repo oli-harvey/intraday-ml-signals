@@ -48,7 +48,9 @@ def main() -> None:
     parser.add_argument("--db", default="data/session.duckdb")
     parser.add_argument("--symbols", nargs="+", default=["BTC/USD"])
     parser.add_argument("--horizon-s", type=float, default=10.0)
-    parser.add_argument("--model", choices=["linear", "hoeffding"], default="hoeffding")
+    parser.add_argument(
+        "--model", choices=["linear", "hoeffding", "classifier"], default="hoeffding"
+    )
     args = parser.parse_args()
     asyncio.run(main_async(args))
 
