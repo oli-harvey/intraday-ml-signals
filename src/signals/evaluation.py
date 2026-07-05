@@ -18,6 +18,7 @@ import numpy as np
 
 from .core import SymbolPipeline
 from .data.replay import ReplaySource
+from .features.cross import CrossFeed
 from .features.engine import FeatureConfig, FeatureEngine
 from .model.online import OnlineModel
 
@@ -33,6 +34,19 @@ class SegmentScore:
     @property
     def edge_pct(self) -> float:
         return (1 - self.mae / self.zero_mae) * 100 if self.zero_mae else float("nan")
+
+    @property
+    def dir_fade(self) -> float:
+        """Fade baseline: bet AGAINST the last window's move. The exact mirror of
+        persistence — on mean-reverting series this is the one to beat."""
+        return 1.0 - self.dir_persistence
+
+    @property
+    def dir_best_baseline(self) -> float:
+        """The strongest naive direction rule on this segment (persistence, fade,
+        or coin flip). Model skill = dir_acc - this, not dir_acc - 0.5."""
+        candidates = [self.dir_persistence, self.dir_fade, 0.5]
+        return max(c for c in candidates if c == c)  # NaN-safe max
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,17 +156,22 @@ async def evaluate(
     horizon_s: float = 10.0,
     feature_config: FeatureConfig | None = None,
     non_overlapping: bool = False,
+    leaders: dict[str, str] | None = None,
 ) -> EvalResult:
     """non_overlapping: score only predictions spaced >= horizon apart. Successive
     quote-rate predictions share ~99% of their outcome window, so overlapping
     scores mostly measure autocorrelation; non-overlapping is the honest view
-    (fewer samples, independent outcomes)."""
+    (fewer samples, independent outcomes).
+
+    leaders: follower -> leader symbol map for cross-asset features (e.g.
+    {"ETH/USD": "BTC/USD"}); the leader must also be in `symbols`."""
     source = ReplaySource(db_path, symbols)
     horizon_ns = int(horizon_s * 1e9)
+    crossfeed = CrossFeed() if leaders else None
     pipelines = {
         s: SymbolPipeline(
             s,
-            FeatureEngine(feature_config),
+            FeatureEngine(feature_config, crossfeed=crossfeed, leader=(leaders or {}).get(s)),
             OnlineModel(kind=model_kind),
             horizon_ns=horizon_ns,
         )

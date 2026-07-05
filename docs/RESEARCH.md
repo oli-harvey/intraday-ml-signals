@@ -133,3 +133,44 @@ Non-overlapping scoring, fee 0.2bps/side sim:
    but no lift claimed.
 4. Economics unchanged: sims negative at both cost scenarios; classifier still
    correctly abstains. No tradeable edge demonstrated.
+
+### 2026-07-05 — research batch: horizon sweep, ablation, meta-labeling, lead-lag
+
+All on the 22.3h soak DB, non-overlapping windows, fee 0.2bps/side sim.
+Full tables: `scripts/research_batch.py` output (repro: just run it).
+
+**1. Horizon sweep (BTC).** Mean reversion is strongest at 5s (fade 0.592) and
+decays monotonically with horizon (0.579 @ 10s → 0.533 @ 120s) — no momentum
+flip within 2 minutes. The model *tracks* the reversion structure (dir rises as
+fade rises) and nearly closes the gap at 5s (0.579 vs 0.592) but never exceeds
+it. Hoeffding's trading losses grow with horizon (magnitude overestimation
+compounds); classifier abstains almost everywhere.
+
+**2. Feature ablation (BTC, 10s) — the surprise.** Removing the microstructure
+group (micro/imbalance/flow/spread + their interactions) IMPROVED direction
+0.542 → 0.574 and cut sim losses -137.7 → -25.6bps. Removing momentum collapsed
+direction to 0.487. At this data size the momentum/lag family carries
+essentially all the signal (it encodes the reversion), while microstructure
+features actively distract the tree — despite the monotonic microprice-bucket
+relation seen on the 30-min session. Hypothesis: micro carries redundant/noisier
+copies of what lags already encode; revisit with more data + equities before
+deleting.
+
+**3. Meta-labeling (BTC, 10s).** Direction unchanged (0.538 vs 0.542) but MAE
+edge improved (-2.8% vs -8.7%) and losing trades were cut (10 trades/-105bps vs
+15/-137.7). The gate does its job: calibration, not direction. Keep as the
+execution-layer filter.
+
+**4. Cross-asset lead-lag.** ETH+BTC-leader improved ETH direction 0.518 →
+0.544 (d-best -0.030 → -0.004). Lead-lag is real. Note ETH is
+persistence-dominated (0.548) unlike BTC — likely stale/sparse quotes
+(5.5k vs 54.6k) making 10s windows trend-y. More ETH data needed.
+
+**5. Synthesis run: `meta` @ 5s, microstructure excluded** — dir 0.576,
+**MAE edge +0.6% (first positive)**, 3 trades/-29bps. Current best config.
+
+**Standing conclusions:** the model family reliably learns the reversion
+structure but hasn't exceeded the fade rule on BTC; the leanest feature set is
+currently the best; every config still loses money after costs. Next levers:
+equities session (different microstructure, tighter costs), fade-aware feature
+(explicit last-window-return input at the scoring horizon), more soak data.

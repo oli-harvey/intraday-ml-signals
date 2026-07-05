@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from ..data.ringbuffer import RingBuffer
 from ..data.schema import MarketEvent, Quote, Side, Tick
+from .cross import CrossFeed
 from .online_stats import EMA, RunningZScore, Welford
 
 
@@ -28,6 +29,7 @@ class FeatureConfig:
     uptick_alpha: float = 0.1  # EMA of sign(mid change): short-term persistence
     dt_alpha: float = 0.1  # EMA of quote inter-arrival seconds: activity regime
     interactions: bool = True  # cross terms between base features (see update())
+    exclude: tuple[str, ...] = ()  # feature names to drop from output (ablations)
     warmup_quotes: int = 64  # emit nothing before this many valid quotes
     mid_depth: int = field(init=False, default=0)  # derived; see __post_init__
 
@@ -38,8 +40,15 @@ class FeatureConfig:
 class FeatureEngine:
     """O(1)-per-event incremental features for one symbol."""
 
-    def __init__(self, config: FeatureConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: FeatureConfig | None = None,
+        crossfeed: CrossFeed | None = None,
+        leader: str | None = None,
+    ) -> None:
         self.config = config or FeatureConfig()
+        self.crossfeed = crossfeed  # shared blackboard; engine posts its own state
+        self.leader = leader  # symbol whose state to consume as features
         c = self.config
         self._mids = RingBuffer(c.mid_depth)
         self._ema_fast = EMA(c.ema_fast_alpha)
@@ -82,6 +91,10 @@ class FeatureEngine:
             self._vol.update(r1)
             if r1 != 0.0:  # persistence of mid direction (unchanged mids carry no sign)
                 self._uptick.update(1.0 if r1 > 0 else -1.0)
+            if self.crossfeed is not None:  # publish own state for followers
+                self.crossfeed.update(
+                    event.symbol, event.ts_ns, r1, self._uptick.value or 0.0
+                )
         if self._prev_ts_ns:
             self._dt.update((event.ts_ns - self._prev_ts_ns) / 1e9)
         self._prev_ts_ns = event.ts_ns
@@ -113,6 +126,8 @@ class FeatureEngine:
             raw["micro_bps"] = 0.0
         raw["uptick"] = self._uptick.value if self._uptick.value is not None else 0.0
         raw["dt_s"] = self._dt.value if self._dt.value is not None else 0.0
+        if self.crossfeed is not None and self.leader is not None:
+            raw.update(self.crossfeed.leader_features(self.leader, event.ts_ns))
 
         if c.interactions:
             # Ratio interactions on raw values (each has a natural denominator):
@@ -139,4 +154,7 @@ class FeatureEngine:
                 product = z[a] * z[b]
                 self.last_raw[name] = product
                 z[name] = self._znorm(name, product)
+        if c.exclude:
+            for name in c.exclude:
+                z.pop(name, None)
         return z

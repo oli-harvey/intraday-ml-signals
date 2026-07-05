@@ -70,3 +70,25 @@ def test_classifier_learns_tail_direction() -> None:
     assert abs(flat) < abs(up) / 2
     m = model.metrics()
     assert m["directional_acc"] > 0.8
+
+def test_fade_and_best_baseline_properties() -> None:
+    from signals.evaluation import SegmentScore
+
+    seg = SegmentScore(n=100, mae=1.0, zero_mae=1.0, dir_acc=0.55, dir_persistence=0.42)
+    assert seg.dir_fade == pytest.approx(0.58)
+    assert seg.dir_best_baseline == pytest.approx(0.58)  # fade wins on reverting data
+    trending = SegmentScore(n=100, mae=1.0, zero_mae=1.0, dir_acc=0.55, dir_persistence=0.61)
+    assert trending.dir_best_baseline == pytest.approx(0.61)  # persistence wins
+
+
+def test_meta_model_learns_and_gates() -> None:
+    """Meta must learn y=2a-b like the primary, with the gate scaling output."""
+    rng = np.random.default_rng(1)
+    model = OnlineModel(kind="meta")
+    for _ in range(3000):
+        a, b = rng.normal(), rng.normal()
+        model.learn_one({"a": a, "b": b}, (2 * a - b) * 1e-4)
+    preds = [model.predict_one({"a": rng.normal(), "b": rng.normal()}) for _ in range(200)]
+    assert any(p != 0.0 for p in preds), "gate killed everything"
+    m = model.metrics()
+    assert m["directional_acc"] > 0.7

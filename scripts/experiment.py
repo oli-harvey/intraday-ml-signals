@@ -21,7 +21,7 @@ from signals.evaluation import evaluate
 
 HEADER = (
     f"{'db':<18} {'model':<10} {'hz':>4} {'symbol':<8} {'n':>6}"
-    f" {'dir':>6} {'pers':>6} {'d-p':>6} {'edge%':>7}"
+    f" {'dir':>6} {'pers':>6} {'fade':>6} {'d-best':>7} {'edge%':>7}"
     f" {'trades':>6} {'hit':>5} {'net_bps':>8}"
 )
 
@@ -40,12 +40,12 @@ async def main_async(args: argparse.Namespace) -> None:
                     seg = score.overall()
                     if seg.n == 0:
                         continue
-                    delta = seg.dir_acc - seg.dir_persistence
+                    delta = seg.dir_acc - seg.dir_best_baseline
                     sim = score.simulate_trading(result.horizon_ns, fee_bps=args.fee_bps)
                     print(
                         f"{Path(db).stem:<18} {model:<10} {horizon:>4.0f} {symbol:<8}"
                         f" {seg.n:>6d} {seg.dir_acc:>6.3f} {seg.dir_persistence:>6.3f}"
-                        f" {delta:>+6.3f} {seg.edge_pct:>+7.1f}"
+                        f" {seg.dir_fade:>6.3f} {delta:>+7.3f} {seg.edge_pct:>+7.1f}"
                         f" {sim.trades:>6d} {sim.hit_rate:>5.2f} {sim.net_bps_sum:>+8.1f}",
                         flush=True,
                     )

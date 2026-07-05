@@ -38,6 +38,13 @@ class OnlineModel:
             self._model = tree.HoeffdingTreeClassifier(grace_period=200)
             self._tail_mean = 0.0  # online mean of |realized| in the tails
             self._tail_n = 0
+        elif kind == "meta":
+            # Meta-labeling (Lopez de Prado): primary regressor proposes direction
+            # and magnitude; a logistic gate learns P(primary sign is correct | features,
+            # primary confidence) and scales the output by max(0, 2p-1) — signals the
+            # gate distrusts are zeroed, so the threshold policy never sees them.
+            self._model = tree.HoeffdingTreeRegressor(grace_period=200)
+            self._gate = linear_model.LogisticRegression()
         else:
             raise ValueError(f"unknown model kind: {kind}")
         self._abs_err_sum = 0.0
@@ -46,13 +53,26 @@ class OnlineModel:
         self.n_learned = 0
 
     def predict_one(self, features: dict[str, float]) -> float:
-        if self.kind != "classifier":
-            return float(self._model.predict_one(features) or 0.0)
-        proba = self._model.predict_proba_one(features)
-        if not proba or self._tail_n == 0:
-            return 0.0
-        # expected return ~ (P(up) - P(down)) * E[|move| | tail]
-        return (proba.get(1, 0.0) - proba.get(-1, 0.0)) * self._tail_mean
+        if self.kind == "classifier":
+            proba = self._model.predict_proba_one(features)
+            if not proba or self._tail_n == 0:
+                return 0.0
+            # expected return ~ (P(up) - P(down)) * E[|move| | tail]
+            return (proba.get(1, 0.0) - proba.get(-1, 0.0)) * self._tail_mean
+        if self.kind == "meta":
+            primary = float(self._model.predict_one(features) or 0.0)
+            if primary == 0.0:
+                return 0.0
+            p_correct = self._gate.predict_proba_one(self._gate_features(features, primary))
+            return primary * max(0.0, 2.0 * p_correct.get(True, 0.5) - 1.0)
+        return float(self._model.predict_one(features) or 0.0)
+
+    @staticmethod
+    def _gate_features(features: dict[str, float], primary: float) -> dict[str, float]:
+        gf = dict(features)
+        gf["primary_abs_bps"] = abs(primary) * 1e4
+        gf["primary_sign"] = 1.0 if primary > 0 else -1.0
+        return gf
 
     def learn_one(
         self, features: dict[str, float], target: float, prediction: float | None = None
@@ -68,6 +88,16 @@ class OnlineModel:
                 self._tail_n += 1
                 self._tail_mean += (abs(target) - self._tail_mean) / self._tail_n
             self._model.learn_one(features, cls)
+        elif self.kind == "meta":
+            # Gate label: would the CURRENT primary's sign have been right here?
+            # (Standard online approximation — the primary drifts between the
+            # prediction and its resolution, so we grade today's primary.)
+            primary = float(self._model.predict_one(features) or 0.0)
+            if primary != 0.0 and target != 0.0:
+                self._gate.learn_one(
+                    self._gate_features(features, primary), (primary > 0) == (target > 0)
+                )
+            self._model.learn_one(features, target)
         else:
             self._model.learn_one(features, target)
         self.n_learned += 1

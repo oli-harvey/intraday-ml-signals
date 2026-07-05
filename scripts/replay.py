@@ -34,12 +34,13 @@ async def main_async(args: argparse.Namespace) -> None:
             print(
                 f"  Q{i}: n={seg.n:5d} mae={seg.mae:.3e} zero_mae={seg.zero_mae:.3e}"
                 f" (edge {seg.edge_pct:+.1f}%) dir={seg.dir_acc:.3f}"
-                f" vs persistence={seg.dir_persistence:.3f}"
+                f" pers={seg.dir_persistence:.3f} fade={seg.dir_fade:.3f}"
             )
         seg = score.overall()
         print(
             f"  ALL: mae={seg.mae:.3e} vs zero={seg.zero_mae:.3e} (edge {seg.edge_pct:+.1f}%)"
-            f" dir={seg.dir_acc:.3f} vs persistence={seg.dir_persistence:.3f}"
+            f" dir={seg.dir_acc:.3f} pers={seg.dir_persistence:.3f} fade={seg.dir_fade:.3f}"
+            f" | model - best_baseline = {seg.dir_acc - seg.dir_best_baseline:+.3f}"
         )
 
 

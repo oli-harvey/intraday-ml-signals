@@ -111,3 +111,36 @@ def test_interactions_toggle_off() -> None:
     emitted = [v for v in _feed(engine, mids) if v is not None]
     assert emitted
     assert not any("_x_" in k or "_over_" in k for k in emitted[0])
+
+
+def test_cross_asset_leader_features() -> None:
+    from signals.features.cross import CrossFeed
+
+    feed = CrossFeed(staleness_ns=5_000_000_000)
+    leader = FeatureEngine(CFG, crossfeed=feed)          # publishes only
+    follower = FeatureEngine(CFG, crossfeed=feed, leader="BTC/USD")
+
+    rng = np.random.default_rng(5)
+    for i in range(20):
+        mid_btc = 60_000 * (1 + rng.normal(0, 1e-4))
+        leader.update(_quote(i, mid_btc))
+        out = follower.update(
+            Quote("ETH/USD", i * 1_000_000_000 + 500_000_000, 2000.0 - 1, 2000.0 + 1, 1, 1)
+        )
+    assert out is not None
+    assert "leader_r1" in out and "leader_uptick" in out
+    # staleness: follower quote 10s after last BTC update -> zeros
+    follower.update(Quote("ETH/USD", 30 * 1_000_000_000, 1999.0, 2001.0, 1, 1))
+    assert follower.last_raw["leader_r1"] == 0.0
+
+
+def test_exclude_drops_features() -> None:
+    cfg = FeatureConfig(
+        lag_returns=(1, 2, 4), warmup_quotes=8, zscore_warmup=4, vol_window=8,
+        exclude=("micro_bps", "micro_x_uptick", "micro_x_ret1", "micro_over_spread"),
+    )
+    engine = FeatureEngine(cfg)
+    rng = np.random.default_rng(6)
+    mids = (60_000 + np.cumsum(rng.normal(0, 5, size=20))).tolist()
+    emitted = [v for v in _feed(engine, mids) if v is not None]
+    assert emitted and not any(k.startswith("micro") for k in emitted[0])

@@ -28,6 +28,7 @@ from .data.base import DataSource
 from .data.ingest import IngestStage
 from .data.schema import MarketEvent
 from .execution.alpaca_exec import PaperExecutor
+from .features.cross import CrossFeed
 from .features.engine import FeatureEngine
 from .model.online import OnlineModel
 from .signal.policy import SignalPolicy
@@ -44,6 +45,7 @@ class PipelineConfig:
     market: str = "crypto"  # "crypto" | "stocks" (stocks: US market hours only)
     horizon_s: float = 10.0
     model_kind: str = "linear"
+    leaders: dict[str, str] | None = None  # follower -> leader cross-asset features
     cost_bps: float = 5.0
     dead_zone_bps: float = 2.0
     limits: RiskLimits = field(default_factory=RiskLimits)
@@ -70,10 +72,11 @@ class Pipeline:
         self.policy = SignalPolicy(config.cost_bps, config.dead_zone_bps)
         self.risk = RiskManager(config.limits)
         self.book = PositionBook(self.risk)
+        crossfeed = CrossFeed() if config.leaders else None
         self.pipes = {
             s: SymbolPipeline(
                 s,
-                FeatureEngine(),
+                FeatureEngine(crossfeed=crossfeed, leader=(config.leaders or {}).get(s)),
                 OnlineModel(kind=config.model_kind),
                 horizon_ns=int(config.horizon_s * 1e9),
             )
@@ -256,7 +259,9 @@ def main() -> None:
         "--duration", type=float, default=None, help="seconds; default: run forever"
     )
     parser.add_argument("--horizon-s", type=float, default=10.0)
-    parser.add_argument("--model", choices=["linear", "hoeffding"], default="linear")
+    parser.add_argument(
+        "--model", choices=["linear", "hoeffding", "classifier"], default="linear"
+    )
     parser.add_argument("--db", default="data/live.duckdb")
     parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
     parser.add_argument("--max-position-usd", type=float, default=1_000.0)
