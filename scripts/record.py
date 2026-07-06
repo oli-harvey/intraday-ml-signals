@@ -21,7 +21,9 @@ from signals.storage.coldstore import ColdStore
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    source = AlpacaSource(load_alpaca_config(), market="crypto", subscribe_quotes=True)
+    source = AlpacaSource(
+        load_alpaca_config(), market=args.market, subscribe_quotes=True, url=args.url
+    )
     await source.subscribe(args.symbols)
     queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=10_000)
     stage = IngestStage(source, queue)
@@ -56,6 +58,8 @@ def main() -> None:
     parser.add_argument("--symbols", nargs="+", default=["BTC/USD", "ETH/USD"])
     parser.add_argument("--duration", type=float, default=1800)
     parser.add_argument("--db", default="data/session.duckdb")
+    parser.add_argument("--market", choices=["crypto", "stocks"], default="crypto")
+    parser.add_argument("--url", default=None, help="WS URL override (e.g. the test stream)")
     args = parser.parse_args()
     uvloop.install()
     asyncio.run(main_async(args))

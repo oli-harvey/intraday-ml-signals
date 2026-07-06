@@ -144,3 +144,16 @@ def test_exclude_drops_features() -> None:
     mids = (60_000 + np.cumsum(rng.normal(0, 5, size=20))).tolist()
     emitted = [v for v in _feed(engine, mids) if v is not None]
     assert emitted and not any(k.startswith("micro") for k in emitted[0])
+
+
+def test_sideless_trades_get_tick_rule_side() -> None:
+    """Equities trades carry no aggressor side; infer from position vs last mid."""
+    engine = FeatureEngine(CFG)
+    engine.update(_quote(0, 100.0))  # establishes mid=100
+    engine.update(Tick("SPY", 1, price=100.3, size=5.0, side=None))  # above mid -> buy
+    assert engine._flow.value == pytest.approx(5.0)
+    engine.update(Tick("SPY", 2, price=99.7, size=3.0, side=None))  # below mid -> sell
+    assert engine._flow.value == pytest.approx(0.1 * -3.0 + 0.9 * 5.0)
+    before = engine._flow.value
+    engine.update(Tick("SPY", 3, price=100.0, size=9.0, side=None))  # at mid -> no signal
+    assert engine._flow.value == before

@@ -72,9 +72,19 @@ class FeatureEngine:
     def update(self, event: MarketEvent) -> dict[str, float] | None:
         """Ingest one event; return the feature vector on quote updates, else None."""
         if isinstance(event, Tick):
-            if event.side is Side.BUY:
+            side = event.side
+            if side is None and len(self._mids) >= 1:
+                # Equities feeds don't tag the aggressor; infer via the quote rule
+                # (Lee-Ready lite): a print above the mid was buyer-initiated,
+                # below it seller-initiated. At exactly the mid, no signal.
+                last_mid = float(self._mids.latest())
+                if event.price > last_mid:
+                    side = Side.BUY
+                elif event.price < last_mid:
+                    side = Side.SELL
+            if side is Side.BUY:
                 self._flow.update(event.size)
-            elif event.side is Side.SELL:
+            elif side is Side.SELL:
                 self._flow.update(-event.size)
             return None
         if not isinstance(event, Quote):

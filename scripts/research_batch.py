@@ -1,18 +1,21 @@
-"""Research batch 2026-07-05: horizon sweep, ablation, meta-labeling, lead-lag.
+"""Research batch: horizon sweep, ablation, meta-labeling, lead-lag.
 
-All on the 22.3h soak DB, non-overlapping scoring, results printed as tables.
-One-off research driver — findings land in docs/RESEARCH.md.
+Non-overlapping scoring throughout; results printed as tables. Findings land
+in docs/RESEARCH.md.
+
+Usage:
+    python scripts/research_batch.py --db data/paper_2026-07-04.duckdb \
+        --symbols BTC/USD ETH/USD --fee-bps 0.2
+The first symbol drives sections 1-3 and acts as leader for the rest in 4.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 
 from signals.evaluation import evaluate
 from signals.features.engine import FeatureConfig
-
-DB = "data/paper_2026-07-04.duckdb"
-FEE = 0.2  # equity-ish; the optimistic case
 
 
 def line(tag: str, seg, sim) -> str:  # type: ignore[no-untyped-def]
@@ -24,19 +27,29 @@ def line(tag: str, seg, sim) -> str:  # type: ignore[no-untyped-def]
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default="data/paper_2026-07-04.duckdb")
+    parser.add_argument("--symbols", nargs="+", default=["BTC/USD", "ETH/USD"])
+    parser.add_argument("--fee-bps", type=float, default=0.2)
+    parser.add_argument("--horizons", nargs="+", type=float, default=[5, 10, 30, 60, 120])
+    args = parser.parse_args()
+    global DB, FEE
+    DB, FEE = args.db, args.fee_bps
+    primary, followers = args.symbols[0], args.symbols[1:]
+
     print("=" * 70)
-    print("1) HORIZON SWEEP (BTC/USD, non-overlapping)")
+    print(f"1) HORIZON SWEEP ({primary}, non-overlapping)")
     print("=" * 70)
     for kind in ("hoeffding", "classifier"):
-        for hz in (5.0, 10.0, 30.0, 60.0, 120.0):
-            r = await evaluate(DB, ["BTC/USD"], kind, hz, non_overlapping=True)
-            s = r.symbols["BTC/USD"]
+        for hz in args.horizons:
+            r = await evaluate(DB, [primary], kind, hz, non_overlapping=True)
+            s = r.symbols[primary]
             sim = s.simulate_trading(r.horizon_ns, fee_bps=FEE)
             print(line(f"{kind} hz={hz:.0f}s", s.overall(), sim), flush=True)
 
     print()
     print("=" * 70)
-    print("2) FEATURE-GROUP ABLATION (BTC/USD, hoeffding, 10s, non-overlapping)")
+    print(f"2) FEATURE-GROUP ABLATION ({primary}, hoeffding, 10s, non-overlapping)")
     print("=" * 70)
     micro = ("micro_bps", "micro_over_spread", "micro_x_uptick", "micro_x_ret1",
              "imbalance", "flow", "flow_x_imbalance", "spread_bps")
@@ -49,29 +62,35 @@ async def main() -> None:
         "no momentum": FeatureConfig(exclude=momentum),
     }
     for tag, cfg in groups.items():
-        r = await evaluate(DB, ["BTC/USD"], "hoeffding", 10.0, feature_config=cfg,
+        r = await evaluate(DB, [primary], "hoeffding", 10.0, feature_config=cfg,
                            non_overlapping=True)
-        s = r.symbols["BTC/USD"]
+        s = r.symbols[primary]
         print(line(tag, s.overall(), s.simulate_trading(r.horizon_ns, fee_bps=FEE)), flush=True)
 
     print()
     print("=" * 70)
-    print("3) META-LABELING vs PRIMARY (BTC/USD, 10s, non-overlapping)")
+    print(f"3) META-LABELING vs PRIMARY ({primary}, 10s, non-overlapping)")
     print("=" * 70)
     for kind in ("hoeffding", "meta"):
-        r = await evaluate(DB, ["BTC/USD"], kind, 10.0, non_overlapping=True)
-        s = r.symbols["BTC/USD"]
+        r = await evaluate(DB, [primary], kind, 10.0, non_overlapping=True)
+        s = r.symbols[primary]
         print(line(kind, s.overall(), s.simulate_trading(r.horizon_ns, fee_bps=FEE)), flush=True)
 
-    print()
-    print("=" * 70)
-    print("4) CROSS-ASSET LEAD-LAG: ETH with/without BTC leader (10s, non-overlapping)")
-    print("=" * 70)
-    for tag, leaders in (("ETH alone", None), ("ETH + BTC leader", {"ETH/USD": "BTC/USD"})):
-        r = await evaluate(DB, ["BTC/USD", "ETH/USD"], "hoeffding", 10.0,
-                           non_overlapping=True, leaders=leaders)
-        s = r.symbols["ETH/USD"]
-        print(line(tag, s.overall(), s.simulate_trading(r.horizon_ns, fee_bps=FEE)), flush=True)
+    if followers:
+        print()
+        print("=" * 70)
+        print(f"4) CROSS-ASSET LEAD-LAG: followers +/- {primary} leader (10s, non-overlapping)")
+        print("=" * 70)
+        for follower in followers:
+            for tag, leaders in (
+                (f"{follower} alone", None),
+                (f"{follower} + leader", {follower: primary}),
+            ):
+                r = await evaluate(DB, [primary, follower], "hoeffding", 10.0,
+                                   non_overlapping=True, leaders=leaders)
+                s = r.symbols[follower]
+                sim = s.simulate_trading(r.horizon_ns, fee_bps=FEE)
+                print(line(tag, s.overall(), sim), flush=True)
 
 
 if __name__ == "__main__":
