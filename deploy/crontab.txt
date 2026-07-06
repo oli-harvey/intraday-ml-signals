@@ -1,0 +1,14 @@
+# Crontab for the deploy user (server runs UTC — verify with timedatectl).
+# Install: crontab deploy/crontab.txt   (WARNING: replaces existing crontab —
+# merge by hand if other jobs exist; contrafact's digest/stats crons live in
+# the same user's crontab).
+#
+# NB: US market open is 14:30 UTC during EDT (Mar-Nov) but 15:30 UTC during
+# EST (Nov-Mar). Adjust at the November clock change, or move the box to
+# America/New_York-aware scheduling then.
+
+# Weekday full-session equities recording (SPY dense + AAPL/NVDA followers)
+30 14 * * 1-5 cd $HOME/intraday-ml-signals && .venv/bin/python scripts/record.py --market stocks --symbols SPY AAPL NVDA --duration 23400 --db data/equities_$(date +\%F).duckdb >> logs/equities_cron.log 2>&1
+
+# Nightly report on the live paper DB (03:10 UTC, after crypto day rollover)
+10 3 * * * cd $HOME/intraday-ml-signals && .venv/bin/python scripts/report.py --db data/paper_live.duckdb --out reports >> logs/report_cron.log 2>&1

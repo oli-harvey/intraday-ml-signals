@@ -1,0 +1,24 @@
+# User-level systemd unit for the 24/7 crypto paper-trading pipeline.
+# Install (as deploy): see deploy/setup_server.sh or docs/DEPLOY.md.
+#   systemctl --user enable --now intraday-pipeline
+# Requires: loginctl enable-linger deploy   (so it runs without an SSH session)
+
+[Unit]
+Description=intraday-ml-signals paper trading pipeline (crypto, 24/7)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/intraday-ml-signals
+ExecStart=%h/intraday-ml-signals/.venv/bin/python -m signals.pipeline \
+    --symbols BTC/USD ETH/USD \
+    --model classifier \
+    --db data/paper_live.duckdb \
+    --max-position-usd 500 \
+    --daily-loss-limit-usd 100
+Restart=always
+RestartSec=10
+# Paper keys only on this box — .env is read from WorkingDirectory.
+
+[Install]
+WantedBy=default.target
