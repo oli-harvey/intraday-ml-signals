@@ -81,5 +81,9 @@ uv run python -m signals.pipeline --symbols BTC/USD --paper   # crypto works 24/
    online stats, no-lookahead labelling walkthrough, and the overlap trap
 3. [03_evaluation_playground](notebooks/03_evaluation_playground.ipynb) — run your
    own experiments: quartile scoring, cost scenarios, feature ablations
+4. [04_key_libraries](notebooks/04_key_libraries.ipynb) — River, websockets,
+   DuckDB, alpaca-py, asyncio: each API shown the way this project uses it
+5. [05_jargon_glossary](notebooks/05_jargon_glossary.ipynb) — every term we use
+   (bps, soak, fade, backpressure…), with real numbers from recorded sessions
 
 Open in VS Code (kernel = `.venv`) or `uv pip install -e ".[analysis]"` first.
