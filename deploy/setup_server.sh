@@ -33,7 +33,9 @@ fi
 
 echo "== 4. venv (uv only, no global installs) =="
 cd "$APP"
-[[ -d .venv ]] || uv venv
+# System python may be too new for dependency wheels (e.g. 3.14); pin a
+# uv-managed 3.12 instead.
+[[ -d .venv ]] || uv venv --python 3.12
 uv pip install -e ".[dev]"
 mkdir -p data logs reports
 

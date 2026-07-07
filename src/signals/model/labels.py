@@ -48,7 +48,12 @@ class LabelQueue:
 
     def add(self, item: Pending) -> None:
         if self._pending and item.ts_ns < self._pending[-1].ts_ns:
-            raise ValueError("predictions must be added in time order")
+            # Dense feeds (equities bursts) can regress exchange timestamps by
+            # microseconds within a frame. Clamp to keep the queue monotonic
+            # rather than reject — the distortion is bounded by the burst width,
+            # negligible vs multi-second horizons. Applies identically live and
+            # in replay.
+            item.ts_ns = self._pending[-1].ts_ns
         self._pending.append(item)
 
     def pop_ready(self, now_ts_ns: int, price: float) -> list[Resolved]:

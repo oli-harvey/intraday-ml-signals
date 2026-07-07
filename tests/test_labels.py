@@ -42,11 +42,14 @@ def test_multiple_pending_resolve_in_order_when_due() -> None:
     assert q.pop_ready(int(19 * S), 110.0)[0].ts_ns == 9 * S
 
 
-def test_out_of_order_additions_rejected() -> None:
-    q = LabelQueue(horizon_ns=S)
+def test_out_of_order_additions_clamped_monotonic() -> None:
+    """Equities bursts regress exchange ts by microseconds; clamp, don't reject."""
+    q = LabelQueue(horizon_ns=10 * S)
     q.add(_pending(5, 100.0))
-    with pytest.raises(ValueError):
-        q.add(_pending(4, 100.0))
+    q.add(_pending(4.999999, 100.0))  # regressed within a burst -> clamped to 5s
+    resolved = q.pop_ready(int(15 * S), 101.0)
+    assert len(resolved) == 2
+    assert resolved[1].ts_ns == 5 * S  # clamped timestamp
 
 
 def test_bad_horizon_rejected() -> None:
