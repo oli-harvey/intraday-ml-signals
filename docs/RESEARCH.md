@@ -174,3 +174,41 @@ structure but hasn't exceeded the fade rule on BTC; the leanest feature set is
 currently the best; every config still loses money after costs. Next levers:
 equities session (different microstructure, tighter costs), fade-aware feature
 (explicit last-window-return input at the scoring horizon), more soak data.
+
+### 2026-07-07 — replication (46h crypto) + first equities session
+
+**Crypto replication (fresh 46h soak, 2.3× more windows):** every 07-05 finding
+held — reversion strongest at 5s decaying with horizon (fade 0.575→0.529);
+model tracks fade at 5s to within 0.003; no-microstructure ablation again best
+(0.566 vs 0.528 full, d-best +0.002 — first non-negative on BTC); no-momentum
+again collapses (0.484); meta gate again halves losses; BTC leader again lifts
+ETH (+2.3pts). These are now *stable, replicated* conclusions on crypto.
+
+**Equities (6.5h SPY/AAPL/NVDA session, 3.89M events, fee 0.2bps/side sims):**
+1. **The fade signature is universal but graded by liquidity:** 5-10s fade =
+   SPY 0.548 < NVDA 0.552 < BTC 0.575 < AAPL 0.586. Everything we trade
+   mean-reverts at short horizons; the most liquid instrument (SPY) is closest
+   to efficient.
+2. **Costs transformed as predicted:** SPY sim losses are single-digit bps
+   (−3.6 to −9.9) vs crypto's hundreds/thousands. Classifier @ 5s exactly
+   matches the fade baseline (d-best −0.001, MAE edge 0.0%) while abstaining.
+   We are no longer fighting the toll booth — only efficiency.
+3. **SPY ablation is flat** — the BTC drop-microstructure result does NOT
+   transfer (0.510 vs 0.509); on SPY every feature group is marginal.
+4. **SPY→AAPL/NVDA lead-lag: negative result.** Leader features didn't help
+   (AAPL 0.579→0.571; NVDA 0.532→0.524) — opposite of BTC→ETH. Likely because
+   single-name quotes are dense (~65/s), so index information is already
+   embedded intra-horizon; the BTC→ETH effect exists because ETH quotes are
+   sparse. Lead-lag helps sparse followers, not dense ones.
+5. **Overtrading trap on single names:** hoeffding fired 417–489 trades on
+   AAPL/NVDA (higher vol → tiny threshold cleared often) and burned −300 to
+   −750bps, mostly spread. Even "free" trading isn't free 400 times over.
+
+**Sharpest open question:** AAPL's fade baseline (0.586 at 10s) is strong and
+its costs are ~1.5bps round trip. Does the *fade rule itself* clear costs as a
+strategy? → add a fade-rule row to the trade sim (it's a strategy now, not
+just a baseline). If yes, the model's job reframes as "learn when fade fails."
+
+**Ops:** LabelQueue timestamp clamp (equities bursts regress exchange ts —
+would have crashed live); recorder queue 10k→50k (VPS hit the cap; Mac peaked
+at 820). Server now runs the 24/7 paper service + weekday equities cron.

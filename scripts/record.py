@@ -25,7 +25,9 @@ async def main_async(args: argparse.Namespace) -> None:
         load_alpaca_config(), market=args.market, subscribe_quotes=True, url=args.url
     )
     await source.subscribe(args.symbols)
-    queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=10_000)
+    # Sized for equities burst rates on a small shared VPS (hit 10k cap there;
+    # events are ~200B so 50k is ~10MB — cheap insurance against WS drops).
+    queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=50_000)
     stage = IngestStage(source, queue)
     store = ColdStore(args.db)
 
