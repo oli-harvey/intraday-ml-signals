@@ -129,9 +129,31 @@ def test_cross_asset_leader_features() -> None:
         )
     assert out is not None
     assert "leader_r1" in out and "leader_uptick" in out
+    assert "leader_gap_bps" not in out  # cross-ASSET leader: gap is meaningless
     # staleness: follower quote 10s after last BTC update -> zeros
     follower.update(Quote("ETH/USD", 30 * 1_000_000_000, 1999.0, 2001.0, 1, 1))
     assert follower.last_raw["leader_r1"] == 0.0
+
+
+def test_cross_venue_gap_feature() -> None:
+    """Same asset from a venue-prefixed leader ("CB:BTC/USD") -> gap in bps."""
+    from signals.features.cross import CrossFeed
+
+    feed = CrossFeed(staleness_ns=5_000_000_000)
+    cb = FeatureEngine(CFG, crossfeed=feed)  # leader venue engine (publishes)
+    alp = FeatureEngine(CFG, crossfeed=feed, leader="CB:BTC/USD")
+
+    rng = np.random.default_rng(8)
+    for i in range(20):
+        # Coinbase trades 10 bps above Alpaca throughout
+        cb_mid = 60_000 * (1 + rng.normal(0, 1e-4)) * 1.001
+        alp_mid = cb_mid / 1.001
+        cb.update(Quote("CB:BTC/USD", i * 1_000_000_000, cb_mid - 1, cb_mid + 1, 1, 1))
+        out = alp.update(
+            Quote("BTC/USD", i * 1_000_000_000 + 100_000_000, alp_mid - 1, alp_mid + 1, 1, 1)
+        )
+    assert out is not None and "leader_gap_bps" in out
+    assert alp.last_raw["leader_gap_bps"] == pytest.approx(10.0, abs=0.2)
 
 
 def test_exclude_drops_features() -> None:

@@ -103,7 +103,7 @@ class FeatureEngine:
                 self._uptick.update(1.0 if r1 > 0 else -1.0)
             if self.crossfeed is not None:  # publish own state for followers
                 self.crossfeed.update(
-                    event.symbol, event.ts_ns, r1, self._uptick.value or 0.0
+                    event.symbol, event.ts_ns, mid, r1, self._uptick.value or 0.0
                 )
         if self._prev_ts_ns:
             self._dt.update((event.ts_ns - self._prev_ts_ns) / 1e9)
@@ -137,7 +137,23 @@ class FeatureEngine:
         raw["uptick"] = self._uptick.value if self._uptick.value is not None else 0.0
         raw["dt_s"] = self._dt.value if self._dt.value is not None else 0.0
         if self.crossfeed is not None and self.leader is not None:
-            raw.update(self.crossfeed.leader_features(self.leader, event.ts_ns))
+            state = self.crossfeed.leader_state(self.leader, event.ts_ns)
+            # Venue-prefixed leaders ("CB:BTC/USD" leading "BTC/USD") are the
+            # same asset, so a price gap is meaningful; cross-asset leaders
+            # (BTC leading ETH) get momentum/persistence only.
+            same_asset = self.leader.split(":", 1)[-1] == event.symbol
+            if state is not None:
+                raw["leader_r1"] = state.r1
+                raw["leader_uptick"] = state.uptick
+                if same_asset:
+                    # Cross-venue gap: the leader venue moved, we haven't (yet)
+                    # — the most direct same-asset lead-lag signal.
+                    raw["leader_gap_bps"] = (state.mid - mid) / mid * 1e4
+            else:
+                raw["leader_r1"] = 0.0
+                raw["leader_uptick"] = 0.0
+                if same_asset:
+                    raw["leader_gap_bps"] = 0.0
 
         if c.interactions:
             # Ratio interactions on raw values (each has a natural denominator):
