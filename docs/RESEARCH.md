@@ -212,3 +212,34 @@ just a baseline). If yes, the model's job reframes as "learn when fade fails."
 **Ops:** LabelQueue timestamp clamp (equities bursts regress exchange ts —
 would have crashed live); recorder queue 10k→50k (VPS hit the cap; Mac peaked
 at 820). Server now runs the 24/7 paper service + weekday equities cron.
+
+### 2026-07-08 — cross-venue leader (Coinbase→Alpaca BTC): FIRST BASELINE BEAT
+
+3h dual-venue session (one process/clock: 12.3k Alpaca + 77.4k Coinbase BTC
+quotes), non-overlapping windows, `leaders={"BTC/USD": "CB:BTC/USD"}` adding
+leader_r1 / leader_uptick / **leader_gap_bps** (venue price gap):
+
+| config | dir | fade (best naive) | d-best |
+|---|---|---|---|
+| hoeffding 5s alone | 0.560 | 0.571 | −0.011 |
+| **hoeffding 5s +CB leader** | **0.648** | 0.571 | **+0.077** |
+| hoeffding 10s alone | 0.495 | 0.570 | −0.075 |
+| **hoeffding 10s +CB leader** | **0.587** | 0.570 | **+0.017** |
+
+**First configuration in the project to beat the best naive baseline** — and
+not marginally: +7.7pts at 5s (crude z ≈ 4.8 at n=990). Mechanism exactly as
+theorized: price discovery happens on Coinbase (~8× denser feed); Alpaca's
+venue lags by enough at 5–10s that the gap predicts the catch-up move.
+No-lookahead is structural: the leader state visible at prediction time is
+whatever the shared clock had already delivered.
+
+Caveats / next:
+1. Single 3h overnight session — REPLICATE with a longer daytime session.
+2. Classifier barely moved (0.522→0.528): the tree classifier needs more data
+   or the band setup dilutes the gap signal; investigate.
+3. Economics still unsolved: direction edge ≠ profit at Alpaca's ~11bps spread
+   (sims still ≈ −105bps on 4 trades). The gap signal must either select rare
+   large moves (magnitude selectivity) or be traded where costs are lower.
+4. Productionize: wire CoinbaseSource into the live Pipeline as an auxiliary
+   (non-traded) source so the server gets permanent dual capture + live leader
+   features; then the paper record measures this config continuously.
