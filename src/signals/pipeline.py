@@ -56,6 +56,7 @@ class PipelineConfig:
     db_path: str = "data/live.duckdb"
     dry_run: bool = False  # predictions + signals, but no orders
     flatten_on_exit: bool = True
+    flatten_on_start: bool = True  # clear unmanaged account residue at startup
     status_every_s: float = 30.0
     equity_refresh_s: float = 60.0
 
@@ -287,6 +288,13 @@ class Pipeline:
         queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=10_000)
         stage = IngestStage(self.source, queue)
         if self.executor is not None:
+            if self.config.flatten_on_start:
+                # The local book starts empty, so any position on the account is
+                # unmanaged residue (e.g. a killed process that never flattened —
+                # this happened: a soak died holding ETH for four days). Start
+                # from a known-flat account or PnL is unattributable.
+                with contextlib.suppress(Exception):
+                    await self.executor.flatten_all()
             self.equity = await self.executor.equity()
             print(f"paper equity: {self.equity:.2f}")
         started = time.monotonic()
