@@ -45,6 +45,34 @@ class OnlineModel:
             # gate distrusts are zeroed, so the threshold policy never sees them.
             self._model = tree.HoeffdingTreeRegressor(grace_period=200)
             self._gate = linear_model.LogisticRegression()
+        elif kind == "adaptive":
+            # Hoeffding tree with ADWIN drift detection: subtrees are replaced
+            # when their error distribution shifts — regime changes handled by
+            # the model instead of hoped away.
+            self._model = tree.HoeffdingAdaptiveTreeRegressor(grace_period=200, seed=1)
+        elif kind == "forest":
+            # Adaptive Random Forest: bagged adaptive trees + per-tree drift
+            # detectors. ~10x the compute of one tree — still micro-seconds,
+            # far inside the budget.
+            from river import forest
+
+            self._model = forest.ARFRegressor(n_models=10, seed=1)
+        elif kind == "ev":
+            # Decision-aware CONTINUOUS objective. Three online quantile
+            # regressions on the forward return (in bps): q25 / q50 / q75.
+            # Output = the PESSIMISTIC side of the interval: q25 if even it is
+            # positive (long), q75 if even it is negative (short), else 0.0
+            # (abstain). The policy still charges toll on top, so a trade fires
+            # only when ~75% of the outcome distribution clears costs — this is
+            # magnitude selectivity expressed continuously, with no fixed band
+            # and no information thrown away by binarising the label.
+            self._quantiles = {
+                q: linear_model.LinearRegression(
+                    optimizer=optim.SGD(0.05), loss=optim.losses.Quantile(alpha=q)
+                )
+                for q in (0.25, 0.5, 0.75)
+            }
+            self._model = self._quantiles[0.5]  # median, for generic metrics paths
         else:
             raise ValueError(f"unknown model kind: {kind}")
         self._abs_err_sum = 0.0
@@ -53,6 +81,15 @@ class OnlineModel:
         self.n_learned = 0
 
     def predict_one(self, features: dict[str, float]) -> float:
+        if self.kind == "ev":
+            # bps-scaled internally; interface stays in return units
+            q25 = float(self._quantiles[0.25].predict_one(features) or 0.0)
+            q75 = float(self._quantiles[0.75].predict_one(features) or 0.0)
+            if q25 > 0.0:
+                return q25 / 1e4  # even the pessimistic quantile is a gain: long
+            if q75 < 0.0:
+                return q75 / 1e4  # even the optimistic quantile is a loss: short
+            return 0.0  # distribution straddles zero: abstain
         if self.kind == "classifier":
             proba = self._model.predict_proba_one(features)
             if not proba or self._tail_n == 0:
@@ -88,6 +125,9 @@ class OnlineModel:
                 self._tail_n += 1
                 self._tail_mean += (abs(target) - self._tail_mean) / self._tail_n
             self._model.learn_one(features, cls)
+        elif self.kind == "ev":
+            for model in self._quantiles.values():
+                model.learn_one(features, target * 1e4)  # learn in bps
         elif self.kind == "meta":
             # Gate label: would the CURRENT primary's sign have been right here?
             # (Standard online approximation — the primary drifts between the

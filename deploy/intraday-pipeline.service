@@ -17,7 +17,7 @@ WorkingDirectory=%h/intraday-ml-signals
 # should be strongest where Alpaca's venue is most stale (the sparse alts).
 ExecStart=%h/intraday-ml-signals/.venv/bin/python -m signals.pipeline \
     --symbols BTC/USD ETH/USD SOL/USD DOGE/USD LTC/USD LINK/USD \
-    --model hoeffding \
+    --model ev \
     --horizon-s 5 \
     --cb-leader BTC/USD ETH/USD SOL/USD DOGE/USD LTC/USD LINK/USD \
     --db data/paper_live.duckdb \

@@ -117,3 +117,33 @@ def test_fade_rule_long_only_skips_shorts() -> None:
         Row(ts_ns=0, prediction=0.0, realized=-0.002, persistence=0.003, spread_bps=1.0),
     ]
     assert score.simulate_fade_rule(10 * S, allow_short=False).trades == 0
+
+
+def test_ev_model_abstains_on_noise_and_commits_on_signal() -> None:
+    """Quantile-interval output: 0.0 when the distribution straddles zero,
+    a pessimistic nonzero estimate when it has clearly shifted."""
+    rng = np.random.default_rng(2)
+    model = OnlineModel(kind="ev")
+    for _ in range(6000):
+        a = rng.choice([-1.0, 0.0, 1.0])
+        target = (a * 20e-4) + rng.normal(0, 3e-4)  # a=+-1 shifts mean to +-20bps
+        model.learn_one({"a": a}, target)
+    on_signal = model.predict_one({"a": 1.0})
+    on_noise = model.predict_one({"a": 0.0})
+    on_short = model.predict_one({"a": -1.0})
+    assert on_signal > 5e-4, f"should commit long, got {on_signal}"
+    assert on_short < -5e-4, f"should commit short, got {on_short}"
+    assert on_noise == 0.0, f"should abstain on noise, got {on_noise}"
+    # pessimism: the committed estimate is below the true mean shift (20bps)
+    assert on_signal < 20e-4
+
+
+def test_adaptive_and_forest_kinds_learn() -> None:
+    rng = np.random.default_rng(3)
+    for kind in ("adaptive", "forest"):
+        model = OnlineModel(kind=kind)
+        for _ in range(1500):
+            a, b = rng.normal(), rng.normal()
+            model.learn_one({"a": a, "b": b}, 2 * a - b)
+        m = model.metrics()
+        assert m["mae"] < 0.9 * m["zero_mae"], f"{kind} failed to learn: {m}"

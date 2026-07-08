@@ -280,3 +280,38 @@ Consequences:
 Ops: pipeline now reconciles at startup (flattens unmanaged account residue —
 a killed soak had held ETH for four days); --cb-leader CLI wiring fixed with a
 CLI-path regression test (flag had been parsed but silently ignored).
+
+### 2026-07-08 (later) — decision-aware objective + model race
+
+New model kinds: `adaptive` (ADWIN Hoeffding), `forest` (Adaptive Random
+Forest), and **`ev`** — the decision-aware continuous objective: three online
+linear quantile regressions (q25/q50/q75) on the forward return in bps;
+output = the pessimistic side of the interval (q25 if positive → long, q75 if
+negative → short, else abstain). Continuous label preserved; magnitude
+selectivity built into the output; the policy still charges the per-quote toll.
+
+Race on the dual-venue session (BTC + CB leader, 5s, non-overlapping, n=990):
+
+| model | dir | d-best | MAE edge | trades (fee 5) | net |
+|---|---|---|---|---|---|
+| hoeffding (live until now) | 0.648 | +0.077 | −10.9% | 4 | −105 bps |
+| adaptive | 0.609 | +0.037 | −7.7% | 2 | −59 |
+| forest | 0.620 | +0.049 | **+2.3%** | 0 | 0 |
+| meta | 0.677 | +0.105 | +0.4% | 2 | −59 |
+| **ev** | **0.700** | **+0.128** | +1.4% | 0 | 0 |
+
+**`ev` is the new best config in the project** — highest direction, largest
+baseline margin yet, positive MAE edge, and it abstains at crypto tolls
+(nothing clears ~21bps; correct behaviour). Notable: linear quantiles BEAT
+tree regressors on identical features — the leader gap is a strong, roughly
+linear signal, and quantile pessimism handles the noise that made plain SGD
+overcommit. Same replication caveat as the original leader finding (one 3h
+session); the live service now runs `ev` so the paper record measures it
+continuously, and tomorrow's 6-pair data retests everything.
+
+**Answer to "should this be a continuous prediction task?"** Yes for the
+label (returns are continuous; binarising at a fixed band mis-specifies the
+per-quote toll and discards information) — but the *decision* should come from
+the outcome distribution, not the mean: commit only when a pessimistic
+quantile clears zero, and let the policy charge costs. Mean-regression was the
+wrong shape for a trading decision; quantile intervals are.

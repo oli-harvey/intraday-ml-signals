@@ -341,7 +341,9 @@ def main() -> None:
     )
     parser.add_argument("--horizon-s", type=float, default=10.0)
     parser.add_argument(
-        "--model", choices=["linear", "hoeffding", "classifier"], default="linear"
+        "--model",
+        choices=["linear", "hoeffding", "classifier", "meta", "adaptive", "forest", "ev"],
+        default="linear",
     )
     parser.add_argument("--db", default="data/live.duckdb")
     parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
