@@ -243,3 +243,40 @@ Caveats / next:
 4. Productionize: wire CoinbaseSource into the live Pipeline as an auxiliary
    (non-traded) source so the server gets permanent dual capture + live leader
    features; then the paper record measures this config continuously.
+
+### 2026-07-08 — fade rule as a strategy: NEGATIVE (decisively)
+
+The open question from 07-07: AAPL fades at 0.586 with ~1.5bps costs — does the
+fade rule itself make money? **No. Everywhere, at every gate.**
+
+Simulated (10s horizon, non-overlapping, cost-charged, one position at a time;
+gates = trade only when |last move| > N bps):
+
+| instrument | best config tried | bps/trade | hit rate |
+|---|---|---|---|
+| SPY (2 sessions) | gate 5bps, 07-07 | −3.0 | 0.25 |
+| AAPL (2 sessions) | gate 5bps, 07-07 | −0.9 | 0.18 |
+| NVDA (2 sessions) | gate 0, 07-06 | −3.6 | 0.24 |
+| BTC (46h) | any | −22.3 | 0.00 |
+
+The resolution of the apparent paradox (dir 0.55–0.59 but hit rates 0.11–0.28):
+**reversion is real but smaller than the toll.** When the fade is right, the
+retracement usually doesn't cover spread+fees; when wrong, you pay move+toll.
+The previous window's move predicts the next move's *sign* better than chance
+but not a *magnitude* that clears costs. Statistically real, economically
+empty — the exact pattern the move/toll ratio (notebook 05) predicted.
+
+Consequences:
+1. "Learn when fade fails" is NOT the reframing — there is no free fade lunch
+   to protect. Question closed.
+2. The only demonstrated exploitable signal remains the **cross-venue leader
+   gap** (07-08 finding), now running live in the paper service (hoeffding @ 5s
+   + CB leader) with continuous dual-venue capture for replication.
+3. General lesson now confirmed three ways (model sims, overtrading rows, fade
+   rule): at these horizons, *direction accuracy without magnitude selectivity
+   is worthless after costs*. Everything ahead should optimize expected net bps
+   per trade, not directional accuracy.
+
+Ops: pipeline now reconciles at startup (flattens unmanaged account residue —
+a killed soak had held ETH for four days); --cb-leader CLI wiring fixed with a
+CLI-path regression test (flag had been parsed but silently ignored).
