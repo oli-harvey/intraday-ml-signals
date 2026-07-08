@@ -174,3 +174,41 @@ def test_cli_wires_cb_leader(tmp_path, monkeypatch) -> None:  # type: ignore[no-
     config = captured["config"]
     assert config.cb_products == ["BTC-USD"]
     assert config.leaders == {"BTC/USD": "CB:BTC/USD"}
+
+
+def test_model_state_persists_across_pipeline_instances(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from signals.data.schema import Quote
+    from signals.pipeline import Pipeline, PipelineConfig
+
+    def build() -> Pipeline:
+        config = PipelineConfig(
+            symbols=["BTC/USD"],
+            dry_run=True,
+            leaders={"BTC/USD": "CB:BTC/USD"},
+            cb_products=["BTC-USD"],
+            db_path=str(tmp_path / "t.duckdb"),
+        )
+        return Pipeline(config, AlpacaConfig(api_key="k", secret_key="s"))
+
+    first = build()
+    # feed enough quotes to warm up and learn a few labels (5s horizon default 10s)
+    for i in range(200):
+        mid = 60_000 + i
+        first._on_event(Quote("BTC/USD", i * 1_000_000_000, mid - 1, mid + 1, 1, 1))
+    learned = first.pipes["BTC/USD"].model.n_learned
+    assert learned > 0
+    first._save_state()
+    first.store.close()
+
+    second = build()  # fresh instance, same signature -> restores
+    assert second.pipes["BTC/USD"].model.n_learned == learned
+    second.store.close()
+
+    # different signature -> starts fresh
+    config = PipelineConfig(
+        symbols=["BTC/USD"], dry_run=True, horizon_s=99.0,
+        db_path=str(tmp_path / "t.duckdb"),
+    )
+    third = Pipeline(config, AlpacaConfig(api_key="k", secret_key="s"))
+    assert third.pipes["BTC/USD"].model.n_learned == 0
+    third.store.close()

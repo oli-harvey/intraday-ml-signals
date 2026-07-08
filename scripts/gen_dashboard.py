@@ -208,6 +208,44 @@ def orders_section(status: dict) -> str:
     )
 
 
+def research_section(root: Path) -> str:
+    """Latest nightly auto-research results, or the static fallback."""
+    try:
+        payload = json.loads((root / "logs" / "research_latest.json").read_text())
+        age_h = (time.time() - payload.get("ts", 0)) / 3600
+        if age_h > 48:
+            raise ValueError("stale")
+    except (OSError, ValueError):
+        return (
+            '<div class="banner sub"><strong>research:</strong> nightly evaluation has '
+            "not run yet; first table appears after the 04:30 UTC cron.</div>"
+        )
+    rows = "".join(
+        (
+            f"<tr><td>{html.escape(r['symbol'])}{' +CB' if r.get('leader') else ''}</td>"
+            f"<td class='num'>{r.get('n') or 0}</td>"
+            f"<td class='num'>{r.get('dir') if r.get('dir') is not None else '–'}</td>"
+            f"<td class='num'>{r.get('d_best') if r.get('d_best') is not None else '–'}</td>"
+            f"<td class='num'>{r.get('trades', 0)}</td>"
+            f"<td class='num'>{r.get('net_bps', 0):+.0f}</td></tr>"
+        )
+        if "error" not in r
+        else f"<tr><td>{html.escape(r['symbol'])}</td><td colspan='5'>error: "
+             f"{html.escape(r['error'])}</td></tr>"
+        for r in payload.get("results", [])
+    )
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(payload.get("ts", 0)))
+    return (
+        f"<table><tr><td>pair</td><td class='num'>n</td><td class='num'>dir</td>"
+        f"<td class='num'>d-best</td><td class='num'>trades</td>"
+        f"<td class='num'>net bps</td></tr>{rows}</table>"
+        f'<div class="sub" style="margin-top:4px">nightly walk-forward eval '
+        f'({html.escape(str(payload.get("model")))} @ {payload.get("horizon_s")}s, '
+        f"independent windows, cost-charged sim) — {when}. "
+        f"d-best &gt; 0 = beats every naive baseline.</div>"
+    )
+
+
 def render(root: Path) -> str:
     status, fresh_key, fresh_label = load_status(root / "data" / "status.json")
     colors = {"good": GOOD, "warning": WARNING, "critical": CRITICAL}
@@ -322,9 +360,9 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
 </table>
 <div class="banner sub" style="margin-top:8px"><strong>equities recorder now:</strong>
 <span style="color:{colors[eq_key]}">{icons[eq_key]} {eq_label}</span> — {eq_detail}<br>
-<strong>research snapshot (2026-07-08):</strong> cross-venue Coinbase leader is the
-first config to beat all naive baselines on BTC (dir 0.648 vs fade 0.571 @ 5s);
-no config is profitable after costs yet. Details: docs/RESEARCH.md.</div>
+<strong>research:</strong> see nightly table below. Details: docs/RESEARCH.md.</div>
+<h2>nightly research (auto)</h2>
+{research_section(root)}
 
 <h2>storage (server)</h2>
 <table>{db_rows}

@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import pickle
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -97,6 +98,14 @@ class Pipeline:
         self.aux_source: CoinbaseSource | None = (
             CoinbaseSource() if config.cb_products else None
         )
+        self._state_path = os.path.join(os.path.dirname(config.db_path) or ".", "model_state.pkl")
+        self._state_sig = (
+            config.model_kind,
+            config.horizon_s,
+            tuple(sorted(config.symbols)),
+            tuple(sorted((config.leaders or {}).items())),
+        )
+        self._load_state()
         self.store = ColdStore(config.db_path)
         self.tap: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=50_000)
         self.tap_dropped = 0
@@ -108,6 +117,41 @@ class Pipeline:
         self._order_tasks: set[asyncio.Task] = set()
         self._proc_us: deque[float] = deque(maxlen=5000)
         self._recent_orders: deque[dict] = deque(maxlen=20)  # surfaced in status.json
+
+    # ---- model persistence (learning survives restarts/deploys) ----
+    def _load_state(self) -> None:
+        try:
+            with open(self._state_path, "rb") as fh:
+                state = pickle.load(fh)
+            if state.get("sig") != self._state_sig:
+                log.info("model state signature mismatch; starting fresh")
+                return
+            self.pipes = state["pipes"]
+            self.leader_engines = state["leaders"]
+            # crossfeed is shared by reference inside the pickle; rebind ours
+            for engine in [
+                *self.leader_engines.values(),
+                *(p.features for p in self.pipes.values()),
+            ]:
+                if engine.crossfeed is not None:
+                    self.crossfeed = engine.crossfeed
+                    break
+            learned = {s: p.model.n_learned for s, p in self.pipes.items()}
+            log.info("restored model state: %s", learned)
+        except FileNotFoundError:
+            pass
+        except Exception:  # corrupt/stale state must never block startup
+            log.warning("could not load model state; starting fresh", exc_info=True)
+
+    def _save_state(self) -> None:
+        try:
+            state = {"sig": self._state_sig, "pipes": self.pipes, "leaders": self.leader_engines}
+            tmp = self._state_path + ".tmp"
+            with open(tmp, "wb") as fh:
+                pickle.dump(state, fh)
+            os.replace(tmp, self._state_path)
+        except Exception:
+            log.warning("could not save model state", exc_info=True)
 
     # ---- logging tap (never blocks the hot loop) ----
     def _tap(self, record: LogRecord) -> None:
@@ -245,6 +289,9 @@ class Pipeline:
                 flush=True,
             )
             self._write_status(stage, started, lat, metrics)
+            self._status_ticks = getattr(self, "_status_ticks", 0) + 1
+            if self._status_ticks % 10 == 0:  # every ~5 min
+                self._save_state()
 
     def _write_status(self, stage, started, lat, metrics) -> None:  # type: ignore[no-untyped-def]
         """Atomically dump machine-readable status for the monitoring dashboard.
@@ -324,6 +371,7 @@ class Pipeline:
             if self.executor is not None and self.config.flatten_on_exit and self.book.open_count:
                 with contextlib.suppress(Exception):
                     await self.executor.flatten_all()
+            self._save_state()
             await self.store.flush()
             self.store.close()
             print(
