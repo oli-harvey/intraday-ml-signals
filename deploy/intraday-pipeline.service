@@ -10,9 +10,14 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/intraday-ml-signals
+# hoeffding + Coinbase leader = the only config that beats all naive baselines
+# (docs/RESEARCH.md 2026-07-08). The CB feed also lands in the cold store, so
+# this service doubles as continuous dual-venue capture for replication.
 ExecStart=%h/intraday-ml-signals/.venv/bin/python -m signals.pipeline \
     --symbols BTC/USD ETH/USD \
-    --model classifier \
+    --model hoeffding \
+    --horizon-s 5 \
+    --cb-leader BTC/USD \
     --db data/paper_live.duckdb \
     --max-position-usd 500 \
     --daily-loss-limit-usd 100
