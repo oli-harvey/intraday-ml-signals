@@ -351,11 +351,14 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    leaders = {s: f"CB:{s}" for s in args.cb_leader}
     config = PipelineConfig(
         symbols=args.symbols,
         market=args.market,
         horizon_s=args.horizon_s,
         model_kind=args.model,
+        leaders=leaders or None,
+        cb_products=[s.replace("/", "-") for s in args.cb_leader],
         db_path=args.db,
         dry_run=args.dry_run,
         cost_bps=args.cost_bps,

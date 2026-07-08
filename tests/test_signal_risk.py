@@ -146,3 +146,31 @@ def test_pipeline_routes_leader_events_to_crossfeed(tmp_path) -> None:  # type: 
     # follower engine is configured to consume that leader
     assert pipe.pipes["BTC/USD"].features.leader == "CB:BTC/USD"
     pipe.store.close()
+
+
+def test_cli_wires_cb_leader(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """--cb-leader must reach PipelineConfig (regression: flag parsed but ignored)."""
+    import sys
+
+    import signals.pipeline as pl
+
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, config, alpaca, **kw):  # type: ignore[no-untyped-def]
+            captured["config"] = config
+
+        async def run(self, duration_s=None):  # type: ignore[no-untyped-def]
+            return None
+
+    monkeypatch.setattr(pl, "Pipeline", FakePipeline)
+    monkeypatch.setattr(pl, "load_alpaca_config", lambda: AlpacaConfig("k", "s"))
+    monkeypatch.setattr(
+        sys, "argv",
+        ["x", "--symbols", "BTC/USD", "--cb-leader", "BTC/USD",
+         "--db", str(tmp_path / "d.duckdb"), "--dry-run", "--duration", "0"],
+    )
+    pl.main()
+    config = captured["config"]
+    assert config.cb_products == ["BTC-USD"]
+    assert config.leaders == {"BTC/USD": "CB:BTC/USD"}
