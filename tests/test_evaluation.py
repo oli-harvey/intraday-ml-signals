@@ -92,3 +92,28 @@ def test_meta_model_learns_and_gates() -> None:
     assert any(p != 0.0 for p in preds), "gate killed everything"
     m = model.metrics()
     assert m["directional_acc"] > 0.7
+
+
+def test_fade_rule_sim_trades_against_last_move() -> None:
+    score = SymbolScore("X")
+    # persistence = last window's move; realized reverses it (mean reversion)
+    score.rows = [
+        Row(ts_ns=0 * S, prediction=0.0, realized=-0.0020, persistence=0.0030,
+            spread_bps=1.0),   # fade shorts, move reverses: +20bps - 1.4 = +18.6
+        Row(ts_ns=20 * S, prediction=0.0, realized=0.0010, persistence=-0.0020,
+            spread_bps=1.0),   # fade longs, reverses: +10 - 1.4 = +8.6
+        Row(ts_ns=40 * S, prediction=0.0, realized=0.0010, persistence=0.00005,
+            spread_bps=1.0),   # |last move| 0.5bps <= min_signal 1.0 -> skip
+    ]
+    sim = score.simulate_fade_rule(horizon_ns=10 * S, fee_bps=0.2, min_signal_bps=1.0)
+    assert sim.trades == 2
+    assert sim.wins == 2
+    assert sim.net_bps_sum == pytest.approx(18.6 + 8.6)
+
+
+def test_fade_rule_long_only_skips_shorts() -> None:
+    score = SymbolScore("X")
+    score.rows = [
+        Row(ts_ns=0, prediction=0.0, realized=-0.002, persistence=0.003, spread_bps=1.0),
+    ]
+    assert score.simulate_fade_rule(10 * S, allow_short=False).trades == 0

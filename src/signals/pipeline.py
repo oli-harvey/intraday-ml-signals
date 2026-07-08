@@ -27,6 +27,7 @@ from .config import AlpacaConfig, load_alpaca_config
 from .core import SymbolPipeline
 from .data.alpaca import AlpacaSource
 from .data.base import DataSource
+from .data.coinbase import CoinbaseSource
 from .data.ingest import IngestStage
 from .data.schema import MarketEvent
 from .execution.alpaca_exec import PaperExecutor
@@ -48,6 +49,7 @@ class PipelineConfig:
     horizon_s: float = 10.0
     model_kind: str = "linear"
     leaders: dict[str, str] | None = None  # follower -> leader cross-asset features
+    cb_products: list[str] = field(default_factory=list)  # aux Coinbase feed (leader-only)
     cost_bps: float = 5.0
     dead_zone_bps: float = 2.0
     limits: RiskLimits = field(default_factory=RiskLimits)
@@ -74,16 +76,26 @@ class Pipeline:
         self.policy = SignalPolicy(config.cost_bps, config.dead_zone_bps)
         self.risk = RiskManager(config.limits)
         self.book = PositionBook(self.risk)
-        crossfeed = CrossFeed() if config.leaders else None
+        self.crossfeed = CrossFeed() if config.leaders else None
         self.pipes = {
             s: SymbolPipeline(
                 s,
-                FeatureEngine(crossfeed=crossfeed, leader=(config.leaders or {}).get(s)),
+                FeatureEngine(crossfeed=self.crossfeed, leader=(config.leaders or {}).get(s)),
                 OnlineModel(kind=config.model_kind),
                 horizon_ns=int(config.horizon_s * 1e9),
             )
             for s in config.symbols
         }
+        # Leader-only engines: symbols we stream for their information (they
+        # publish to the crossfeed) but never predict on or trade.
+        self.leader_engines: dict[str, FeatureEngine] = {
+            leader: FeatureEngine(crossfeed=self.crossfeed)
+            for leader in (config.leaders or {}).values()
+            if leader not in self.pipes
+        }
+        self.aux_source: CoinbaseSource | None = (
+            CoinbaseSource() if config.cb_products else None
+        )
         self.store = ColdStore(config.db_path)
         self.tap: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=50_000)
         self.tap_dropped = 0
@@ -164,7 +176,11 @@ class Pipeline:
 
     # ---- hot loop ----
     def _on_event(self, event: MarketEvent) -> None:
-        self._tap(event)
+        self._tap(event)  # leader events included: the DB doubles as dual-venue capture
+        leader_engine = self.leader_engines.get(event.symbol)
+        if leader_engine is not None:
+            leader_engine.update(event)  # publishes to crossfeed; no prediction
+            return
         pipe = self.pipes.get(event.symbol)
         if pipe is None:
             return
@@ -280,6 +296,9 @@ class Pipeline:
             asyncio.create_task(self.store.run(self.tap)),
             asyncio.create_task(self._status_loop(stage, started)),
         ]
+        if self.aux_source is not None:
+            await self.aux_source.subscribe(self.config.cb_products)
+            tasks.append(asyncio.create_task(IngestStage(self.aux_source, queue).run()))
         try:
             if duration_s is None:
                 await asyncio.gather(*tasks)
@@ -287,6 +306,8 @@ class Pipeline:
                 await asyncio.sleep(duration_s)
         finally:
             await self.source.close()
+            if self.aux_source is not None:
+                await self.aux_source.close()
             if self._order_tasks:  # let in-flight orders settle
                 await asyncio.wait(self._order_tasks, timeout=15)
             for task in tasks:
@@ -318,6 +339,13 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
     parser.add_argument("--max-position-usd", type=float, default=1_000.0)
     parser.add_argument("--daily-loss-limit-usd", type=float, default=200.0)
+    parser.add_argument(
+        "--cb-leader",
+        nargs="*",
+        default=[],
+        metavar="SYMBOL",
+        help="symbols to give a Coinbase same-asset leader (e.g. BTC/USD)",
+    )
     parser.add_argument("--cost-bps", type=float, default=5.0)
     parser.add_argument("--dead-zone-bps", type=float, default=2.0)
     args = parser.parse_args()

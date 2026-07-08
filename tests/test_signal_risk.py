@@ -120,3 +120,29 @@ def test_executor_refuses_non_paper_endpoint() -> None:
 def test_executor_accepts_paper_endpoint() -> None:
     paper = AlpacaConfig(api_key="k", secret_key="s")
     PaperExecutor(paper, client=object())  # no network with injected client
+
+
+# ---- pipeline leader routing ----
+
+def test_pipeline_routes_leader_events_to_crossfeed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from signals.data.schema import Quote
+    from signals.pipeline import Pipeline, PipelineConfig
+
+    config = PipelineConfig(
+        symbols=["BTC/USD"],
+        dry_run=True,
+        leaders={"BTC/USD": "CB:BTC/USD"},
+        cb_products=["BTC-USD"],
+        db_path=str(tmp_path / "t.duckdb"),
+    )
+    pipe = Pipeline(config, AlpacaConfig(api_key="k", secret_key="s"))
+    assert "CB:BTC/USD" in pipe.leader_engines
+    assert pipe.aux_source is not None
+    # two leader quotes -> crossfeed publishes (needs one prior mid for r1)
+    pipe._on_event(Quote("CB:BTC/USD", 1_000_000_000, 61999.0, 62001.0, 1, 1))
+    pipe._on_event(Quote("CB:BTC/USD", 2_000_000_000, 62009.0, 62011.0, 1, 1))
+    state = pipe.crossfeed.leader_state("CB:BTC/USD", 2_500_000_000)
+    assert state is not None and state.mid == 62010.0
+    # follower engine is configured to consume that leader
+    assert pipe.pipes["BTC/USD"].features.leader == "CB:BTC/USD"
+    pipe.store.close()

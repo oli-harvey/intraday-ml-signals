@@ -110,6 +110,35 @@ class SymbolScore:
             busy_until = r.ts_ns + horizon_ns
         return sim
 
+    def simulate_fade_rule(
+        self,
+        horizon_ns: int,
+        fee_bps: float = 0.2,
+        min_signal_bps: float = 0.0,
+        allow_short: bool = True,
+    ) -> TradeSim:
+        """The fade BASELINE as a STRATEGY: trade against the previous
+        independent window's move (r.persistence) when it exceeds
+        min_signal_bps. Same costs and one-position-at-a-time sequencing as
+        the model sim. Only meaningful on rows produced with
+        non_overlapping=True (persistence = the last independent window)."""
+        sim = TradeSim()
+        busy_until = -(10**18)
+        for r in self.rows:
+            if r.ts_ns < busy_until:
+                continue
+            if abs(r.persistence) * 1e4 <= min_signal_bps:
+                continue  # last move too small to fade
+            direction = -1.0 if r.persistence > 0 else 1.0
+            if direction < 0 and not allow_short:
+                continue
+            net_bps = direction * r.realized * 1e4 - (r.spread_bps + 2 * fee_bps)
+            sim.trades += 1
+            sim.wins += 1 if net_bps > 0 else 0
+            sim.net_bps_sum += net_bps
+            busy_until = r.ts_ns + horizon_ns
+        return sim
+
     def segment(self, lo: int, hi: int) -> SegmentScore:
         seg = self.rows[lo:hi]
         preds = np.array([r.prediction for r in seg])
