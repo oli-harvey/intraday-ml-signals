@@ -58,3 +58,21 @@ tail logs/equities_cron.log                    # last equities session
 - DuckDB single-writer: don't open `data/paper_live.duckdb` read-write while
   the service runs; `read_only=True` connections are fine after a checkpoint,
   or pull a copy to the Mac.
+
+## Mobile monitoring dashboard
+
+**URL:** `https://contrafact.quest/stats/trading.html` — same basic-auth
+credentials as /stats. Auto-refreshes every 60s; light/dark follows the phone.
+
+Data flow: the pipeline service writes `data/status.json` atomically every
+status tick (never expose the single-writer DuckDB to other processes); a
+per-minute cron renders `scripts/gen_dashboard.py` and copies the HTML into the
+`chord-gen_stats_data` docker volume that Caddy already serves behind auth.
+Freshness banner: LIVE (<90s), STALE (<5m), OFFLINE — OFFLINE means the service
+stopped writing status, which is itself the alert.
+
+Future control plane (deliberately not built yet): the page gains inputs that
+write `control.json` (position caps, kill switch), which the pipeline reads
+each status tick. Real-money control requires stronger auth than
+basic-auth-over-TLS (at minimum: separate credential, confirmation step, and
+signed requests) — revisit only if paper trading proves an edge.
