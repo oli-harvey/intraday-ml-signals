@@ -14,9 +14,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: |
-          uv venv
-          uv pip install -e ".[dev]"
+        # setup-uv already provisions the venv (VIRTUAL_ENV is set); an explicit
+        # `uv venv` here fails with "already exists" — do not add one back.
+        run: uv pip install -e ".[dev]"
       - name: Lint
         run: .venv/bin/ruff check src tests scripts
       - name: Test
