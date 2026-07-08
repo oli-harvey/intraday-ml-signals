@@ -94,6 +94,7 @@ class Pipeline:
         self._inflight: set[str] = set()
         self._order_tasks: set[asyncio.Task] = set()
         self._proc_us: deque[float] = deque(maxlen=5000)
+        self._recent_orders: deque[dict] = deque(maxlen=20)  # surfaced in status.json
 
     # ---- logging tap (never blocks the hot loop) ----
     def _tap(self, record: LogRecord) -> None:
@@ -137,6 +138,17 @@ class Pipeline:
                     fill_price=result.filled_avg_price,
                     note=note,
                 )
+            )
+            self._recent_orders.append(
+                {
+                    "ts": time.time(),
+                    "symbol": intent.symbol,
+                    "side": intent.side,
+                    "qty": result.filled_qty or intent.qty,
+                    "price": result.filled_avg_price,
+                    "status": result.status,
+                    "note": note,
+                }
             )
         except Exception:
             self.order_errors += 1
@@ -244,6 +256,7 @@ class Pipeline:
             "tap_dropped": self.tap_dropped,
             "equity": self.equity,
             "reconnects": getattr(self.source, "reconnects", 0),
+            "recent_orders": list(self._recent_orders),
         }
         try:
             tmp = "data/status.json.tmp"
