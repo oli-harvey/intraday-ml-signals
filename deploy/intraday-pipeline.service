@@ -13,13 +13,16 @@ WorkingDirectory=%h/intraday-ml-signals
 # hoeffding + Coinbase leader = the only config that beats all naive baselines
 # (docs/RESEARCH.md 2026-07-08). The CB feed also lands in the cold store, so
 # this service doubles as continuous dual-venue capture for replication.
+# Six pairs, each with a same-asset Coinbase leader: the venue-gap signal
+# should be strongest where Alpaca's venue is most stale (the sparse alts).
 ExecStart=%h/intraday-ml-signals/.venv/bin/python -m signals.pipeline \
-    --symbols BTC/USD ETH/USD \
+    --symbols BTC/USD ETH/USD SOL/USD DOGE/USD LTC/USD LINK/USD \
     --model hoeffding \
     --horizon-s 5 \
-    --cb-leader BTC/USD \
+    --cb-leader BTC/USD ETH/USD SOL/USD DOGE/USD LTC/USD LINK/USD \
     --db data/paper_live.duckdb \
     --max-position-usd 500 \
+    --max-open-positions 2 \
     --daily-loss-limit-usd 100
 Restart=always
 RestartSec=10

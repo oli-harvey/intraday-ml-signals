@@ -346,6 +346,7 @@ def main() -> None:
     parser.add_argument("--db", default="data/live.duckdb")
     parser.add_argument("--dry-run", action="store_true", help="no orders, signals only")
     parser.add_argument("--max-position-usd", type=float, default=1_000.0)
+    parser.add_argument("--max-open-positions", type=int, default=1)
     parser.add_argument("--daily-loss-limit-usd", type=float, default=200.0)
     parser.add_argument(
         "--cb-leader",
@@ -373,6 +374,7 @@ def main() -> None:
         dead_zone_bps=args.dead_zone_bps,
         limits=RiskLimits(
             max_position_usd=args.max_position_usd,
+            max_open_positions=args.max_open_positions,
             daily_loss_limit_usd=args.daily_loss_limit_usd,
         ),
     )

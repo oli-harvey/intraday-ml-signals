@@ -27,7 +27,8 @@ from pathlib import Path
 # dataviz reference palette: status colors + categorical slots 1-2 (validated
 # set, fixed order); colors are always paired with icon/label text.
 GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
-SERIES = ["#2a78d6", "#1baf7a"]  # slot 1 blue, slot 2 aqua
+# Validated categorical slots 1-7, fixed order (never cycled beyond 7 series).
+SERIES = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4"]
 
 HISTORY_KEEP = 20_000  # ~2 weeks at 1/min
 HISTORY_PRUNE_AT = 30_000
