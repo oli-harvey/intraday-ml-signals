@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -213,6 +215,43 @@ class Pipeline:
                 f" tap_drop={self.tap_dropped}",
                 flush=True,
             )
+            self._write_status(stage, started, lat, metrics)
+
+    def _write_status(self, stage, started, lat, metrics) -> None:  # type: ignore[no-untyped-def]
+        """Atomically dump machine-readable status for the monitoring dashboard.
+
+        This file (not the DB) is the dashboard's source of truth — the DuckDB
+        is single-writer and must not be opened by other processes while live.
+        Later, a control-plane counterpart (control.json, read here) can adjust
+        limits at runtime; writing status is the read-only half of that design.
+        """
+        status = {
+            "ts": time.time(),
+            "uptime_s": round(time.monotonic() - started),
+            "symbols": self.config.symbols,
+            "model": self.config.model_kind,
+            "events": stage.events,
+            "proc_us_p50": float(np.percentile(lat, 50)),
+            "proc_us_p99": float(np.percentile(lat, 99)),
+            "per_symbol": {
+                s: {"n": m["n"], "dir": m["directional_acc"]} for s, m in metrics.items()
+            },
+            "open_positions": self.book.open_count,
+            "orders": self.orders_submitted,
+            "order_errors": self.order_errors,
+            "pnl_today": self.risk.realized_pnl_today,
+            "breaker": "TRIPPED" if self.risk.circuit_breaker_tripped else "ok",
+            "tap_dropped": self.tap_dropped,
+            "equity": self.equity,
+            "reconnects": getattr(self.source, "reconnects", 0),
+        }
+        try:
+            tmp = "data/status.json.tmp"
+            with open(tmp, "w") as fh:
+                json.dump(status, fh)
+            os.replace(tmp, "data/status.json")
+        except OSError:  # monitoring must never hurt the pipeline
+            log.warning("could not write status.json", exc_info=True)
 
     async def run(self, duration_s: float | None = None) -> None:
         await self.source.subscribe(self.config.symbols)
