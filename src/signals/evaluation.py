@@ -56,6 +56,7 @@ class Row:
     realized: float
     persistence: float  # baseline forecast known at prediction time
     spread_bps: float
+    gap_bps: float = 0.0  # leader_gap_bps at prediction time (cross-venue baseline)
 
 
 @dataclass
@@ -192,11 +193,19 @@ async def evaluate(
     scores mostly measure autocorrelation; non-overlapping is the honest view
     (fewer samples, independent outcomes).
 
-    leaders: follower -> leader symbol map for cross-asset features (e.g.
-    {"ETH/USD": "BTC/USD"}); the leader must also be in `symbols`."""
-    source = ReplaySource(db_path, symbols)
-    horizon_ns = int(horizon_s * 1e9)
+    leaders: follower -> leader symbol map for cross-asset/-venue features (e.g.
+    {"ETH/USD": "BTC/USD"} or {"BTC/USD": "CB:BTC/USD"}). Leader symbols not in
+    `symbols` (e.g. the venue-prefixed Coinbase feed) are streamed and routed to
+    publish-only engines so the crossfeed is populated exactly as it is live."""
     crossfeed = CrossFeed() if leaders else None
+    horizon_ns = int(horizon_s * 1e9)
+    # Distinct leader symbols that are not themselves traded followers: these get
+    # publish-only engines (update the crossfeed, never predict) — mirrors the
+    # live pipeline's leader_engines. Without this the crossfeed stays empty and
+    # every leader_gap_bps is 0 (the cross-venue feature silently no-ops).
+    leader_syms = sorted({v for v in (leaders or {}).values() if v not in symbols})
+    source = ReplaySource(db_path, symbols + leader_syms)
+    leader_engines = {ls: FeatureEngine(crossfeed=crossfeed) for ls in leader_syms}
     pipelines = {
         s: SymbolPipeline(
             s,
@@ -213,6 +222,10 @@ async def evaluate(
     events = 0
 
     async for event in source.stream():
+        leng = leader_engines.get(event.symbol)
+        if leng is not None:
+            leng.update(event)  # publish leader state to the crossfeed; no prediction
+            continue
         pipe = pipelines.get(event.symbol)
         if pipe is None:
             continue
@@ -232,6 +245,7 @@ async def evaluate(
                     realized=r.realized,
                     persistence=last_realized[event.symbol],
                     spread_bps=r.spread_bps,
+                    gap_bps=r.features.get("leader_gap_bps", 0.0),
                 )
             )
             last_realized[event.symbol] = r.realized

@@ -356,3 +356,49 @@ Consequences:
 - Decisive next test still worth running: a sign(gap) baseline — if it matches
   the model's 0.93, the ML adds nothing over the raw gap (very likely here).
 - Do NOT chase the shiny alt d-best numbers. They are the artifact, not the win.
+
+## 2026-07-09 — sign(gap) baseline: the ML is NOT a gap indicator (verdict reversed)
+
+Ran the queued decisive check (`scripts/gap_baseline.py`, ev @ 5s, non-overlapping,
+322k events on `data/paper_live.duckdb`, all 6 pairs each with CB leader). Fixed
+an `evaluate()` robustness gap first: the crossfeed only populated when the leader
+was ALSO listed in `symbols` (nightly_research/research_batch both do
+`eval_syms=[leader, sym]`, so their historical numbers STAND — not corrupted).
+Passing leaders without adding them to `symbols` — as this script does — silently
+gave `leader_gap_bps` = 0. `evaluate()` now spins up publish-only leader engines
+for leaders not in `symbols`, mirroring live. (90 tests green.)
+
+| sym | n | model_dir | gap_dir | fade_dir | agree% | dir\|agree | dir\|disagree | n_dis | model_bps | gap_bps |
+|-----|---|-----------|---------|----------|--------|-----------|--------------|-------|-----------|---------|
+| BTC | 7171 | 0.704 | 0.609 | 0.568 | 67% | 0.758 | 0.593 | 1083 | −21.5 | −22.0 |
+| ETH | 1335 | 0.965 | 0.944 | 0.458 | 99% | 0.968 | 0.556 | 9 | −18.6 | −18.8 |
+| SOL | 1462 | 0.940 | 0.568 | 0.506 | 63% | 0.944 | 0.932 | 441 | −55.3 | −59.3 |
+| DOGE | 1268 | 0.919 | 0.535 | 0.482 | 76% | 0.938 | 0.862 | 145 | −50.1 | −54.7 |
+| LTC | 970 | 0.721 | 0.501 | 0.465 | 90% | 0.707 | 0.836 | 61 | −96.2 | −98.8 |
+| LINK | 1136 | 0.932 | 0.836 | 0.460 | 90% | 0.954 | 0.735 | 98 | −29.5 | −30.4 |
+
+**The "dressed-up gap indicator" hypothesis is REFUTED.** On the alts the raw gap
+SIGN is near a coin flip (SOL 0.568, DOGE 0.535, LTC 0.501) — yet the model scores
+0.92–0.94, and it holds 0.86–0.93 direction *even on the rows where it disagrees
+with the gap sign* (`dir|disagree`, n=441 on SOL). It is also NOT persistence/fade
+(`fade_dir` 0.46–0.57 everywhere). So the alt direction is a genuine, independent,
+short-horizon predictable signal — not gap-closing, not autocorrelation.
+
+Mechanism, refined: it's not the instantaneous gap *level* sign, it's the leader's
+recent *move* (`leader_r1` / `leader_uptick`) — which way Coinbase just went — that
+predicts the thin Alpaca alt's catch-up. The gap sign can be +ve while the leader
+is falling; the model uses the leader's direction, which is the better predictor.
+
+**But the economic verdict is UNCHANGED and total:** every pair loses 18–96 bps/
+trade after the toll (model_bps ≈ gap_bps, both deeply negative). 0.94 direction on
+SOL still bleeds 55 bps because the round-trip spread (~60 bps) dwarfs the few-bp
+move. Direction is real; magnitude-vs-toll is fatal — the core lesson again.
+
+**What changes:** the signal is NOT an in-principle-untradeable data artifact (my
+07-09 framing was too harsh). It's real short-horizon predictability that is purely
+COST-BLOCKED. That *strengthens* the case for the maker/limit-order sim: if we can
+capture the move at/inside the mid instead of paying the full spread, a genuine
+0.94-direction 5s signal is exactly the thing that could survive. The maker sim is
+now the arbiter — and it must also rule out that the alt 0.94 is a sparse-quote
+resolution artifact (first-price-after-horizon on a thin venue) rather than a move
+you could actually fill against.
