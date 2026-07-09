@@ -67,6 +67,7 @@ def append_history(hist_path: Path, status: dict) -> None:
             "pnl_today": status.get("pnl_today"),
             "events": status.get("events"),
             "dir": {s: m.get("dir") for s, m in status.get("per_symbol", {}).items()},
+            "edge": {s: m.get("edge_pct") for s, m in status.get("per_symbol", {}).items()},
         }
         with hist_path.open("a") as fh:
             fh.write(json.dumps(slim) + "\n")
@@ -208,6 +209,68 @@ def orders_section(status: dict) -> str:
     )
 
 
+def fmt(value, spec: str = "{:.2f}") -> str:  # type: ignore[no-untyped-def]
+    if value is None or value != value:
+        return "–"
+    return spec.format(value)
+
+
+def diagnostics_table(status: dict) -> str:
+    per = status.get("per_symbol", {})
+    if not per:
+        return '<div class="banner sub">no model state yet</div>'
+    rows = "".join(
+        f"<tr><td>{html.escape(sym)}</td>"
+        f"<td class='num'>{fmt(m.get('rolling_n'), '{:,.0f}')}</td>"
+        f"<td class='num'>{fmt(m.get('commit_rate'), '{:.0%}')}</td>"
+        f"<td class='num'>{fmt(m.get('bias_bps'), '{:+.2f}')}</td>"
+        f"<td class='num'>{fmt(m.get('resid_std_bps'))}</td>"
+        f"<td class='num'>{fmt(m.get('r2'), '{:+.3f}')}</td>"
+        f"<td class='num'>{fmt(m.get('edge_pct'), '{:+.1f}%')}</td>"
+        f"<td class='num'>{fmt(m.get('coverage'), '{:.0%}')}</td></tr>"
+        for sym, m in per.items()
+    )
+    return (
+        "<table><tr><td>symbol</td><td class='num'>n</td><td class='num'>commit</td>"
+        "<td class='num'>bias</td><td class='num'>resid σ</td>"
+        "<td class='num'>R²</td><td class='num'>edge</td>"
+        "<td class='num'>q-cov</td></tr>"
+        f"{rows}</table>"
+        '<div class="sub" style="margin-top:4px">rolling ≤2000 labels, bps. '
+        "bias→0 &amp; R²&gt;0 = predictions carry info; commit = fraction of "
+        "quotes acted on; q-cov→50% = EV quantile interval calibrated.</div>"
+    )
+
+
+def calibration_scatter(pairs: list, label: str, size: int = 170) -> str:
+    if len(pairs) < 20:
+        return ""
+    values = sorted(abs(v) for p in pairs for v in p)
+    lim = max(values[int(len(values) * 0.95)], 0.5)
+
+    def sc(v: float) -> float:
+        clipped = max(-lim, min(lim, v))
+        return size / 2 + (clipped / lim) * (size / 2 - 12)
+
+    dots = "".join(
+        f'<circle cx="{sc(p):.1f}" cy="{size - sc(t):.1f}" r="2.5" fill="{SERIES[0]}"'
+        ' fill-opacity="0.55"/>'
+        for p, t in pairs
+    )
+    mid = size / 2
+    return (
+        f'<div class="scatter"><svg viewBox="0 0 {size} {size}" role="img">'
+        f'<line x1="12" y1="{size - 12}" x2="{size - 12}" y2="12"'
+        ' stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"/>'
+        f'<line x1="{mid}" y1="0" x2="{mid}" y2="{size}" stroke="var(--line)"/>'
+        f'<line x1="0" y1="{mid}" x2="{size}" y2="{mid}" stroke="var(--line)"/>'
+        f"{dots}"
+        f'<text x="4" y="12" class="axis">±{lim:.1f}bps</text></svg>'
+        f'<div class="sub" style="text-align:center">{html.escape(label)}'
+        f" ({len(pairs)})</div></div>"
+    )
+
+
 def research_section(root: Path) -> str:
     """Latest nightly auto-research results, or the static fallback."""
     try:
@@ -263,6 +326,19 @@ def render(root: Path) -> str:
                 dir_series.setdefault(sym, []).append((row["ts"], d))
 
     eq_key, eq_label, eq_detail = equities_summary(root / "logs" / "equities_cron.log")
+
+    scatters = "".join(
+        calibration_scatter(m.get("pairs") or [], sym)
+        for sym, m in status.get("per_symbol", {}).items()
+    )
+    edge_series: dict[str, list[tuple[float, float]]] = {}
+    for row in history:
+        for sym, e in (row.get("edge") or {}).items():
+            if isinstance(e, (int, float)) and e == e:
+                edge_series.setdefault(sym, []).append((row["ts"], e))
+    scatter_placeholder = (
+        '<div class="banner sub">appears after ≥20 committed predictions/symbol</div>'
+    )
 
     tiles = []
     if status:
@@ -325,6 +401,9 @@ h2 {{ font-size:.85rem; text-transform:uppercase; letter-spacing:.04em;
            padding:12px; font-size:.85rem; }}
 .chart {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
           padding:12px 6px 6px; }}
+.scatter-row {{ display:flex; flex-wrap:wrap; gap:10px; }}
+.scatter {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:8px; flex:1 1 150px; max-width:200px; }}
 .axis {{ font:11px -apple-system,system-ui,sans-serif; fill:var(--muted); }}
 table {{ width:100%; border-collapse:collapse; background:var(--card);
          border:1px solid var(--line); border-radius:10px; overflow:hidden;
@@ -344,6 +423,15 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
 
 <h2>rolling directional accuracy (overlapping, per symbol)</h2>
 <div class="chart">{svg_chart(dir_series, value_format="{:.2f}")}</div>
+
+<h2>model diagnostics (rolling)</h2>
+{diagnostics_table(status)}
+
+<h2>calibration: predicted vs realized (dashed = perfect)</h2>
+<div class="scatter-row">{scatters or scatter_placeholder}</div>
+
+<h2>rolling MAE edge vs zero baseline</h2>
+<div class="chart">{svg_chart(edge_series, value_format="{{:+.1f}}%")}</div>
 
 <h2>orders (crypto pipeline — the only experiment that trades)</h2>
 {orders_section(status)}

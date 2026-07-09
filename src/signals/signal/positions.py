@@ -48,9 +48,17 @@ class PositionBook:
             qty = self.risk.size_order(equity, mid, volatility)
             if qty <= 0:
                 return None
-            return OrderIntent(signal.symbol, "buy", qty, "enter long")
+            reason = (
+                f"enter long (pred {signal.predicted_return * 1e4:+.1f}bps,"
+                f" conf {signal.confidence:.1f}x)"
+            )
+            return OrderIntent(signal.symbol, "buy", qty, reason)
         if signal.action is Action.SHORT and held is not None:
-            return OrderIntent(signal.symbol, "sell", held.qty, "exit long")
+            reason = (
+                f"exit long (pred {signal.predicted_return * 1e4:+.1f}bps,"
+                f" conf {signal.confidence:.1f}x)"
+            )
+            return OrderIntent(signal.symbol, "sell", held.qty, reason)
         return None  # FLAT, already long on LONG, or SHORT while flat (long-only)
 
     def on_fill(self, symbol: str, side: str, qty: float, price: float) -> float:

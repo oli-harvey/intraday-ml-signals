@@ -147,3 +147,27 @@ def test_adaptive_and_forest_kinds_learn() -> None:
             model.learn_one({"a": a, "b": b}, 2 * a - b)
         m = model.metrics()
         assert m["mae"] < 0.9 * m["zero_mae"], f"{kind} failed to learn: {m}"
+
+
+def test_diagnostics_report_calibration_and_residuals() -> None:
+    """On a clean linear signal, diagnostics must show ~0 bias, positive R²,
+    a sane residual σ, and EV quantile coverage near 0.5."""
+    rng = np.random.default_rng(11)
+    model = OnlineModel(kind="ev")
+    for _ in range(4000):
+        a = rng.choice([-1.0, 0.0, 1.0])
+        model.learn_one({"a": a}, a * 15e-4 + rng.normal(0, 4e-4))
+    d = model.diagnostics()
+    assert d["rolling_n"] > 1000
+    assert abs(d["bias_bps"]) < 2.0          # roughly unbiased
+    assert d["r2"] > 0.3                      # explains variance vs predict-zero
+    assert 2.0 < d["resid_std_bps"] < 10.0
+    assert 0.30 < d["coverage"] < 0.70        # q25-q75 brackets ~half the outcomes
+    assert 0.0 <= d["commit_rate"] <= 1.0
+    pairs = model.recent_pairs(50)
+    assert len(pairs) == 50 and all(p != 0.0 for p, _ in pairs)  # committed only
+
+
+def test_diagnostics_empty_model_is_all_nan_not_crash() -> None:
+    d = OnlineModel(kind="ev").diagnostics()
+    assert d["rolling_n"] == 0.0 and d["bias_bps"] != d["bias_bps"]  # NaN

@@ -78,6 +78,9 @@ class OnlineModel:
         self._abs_err_sum = 0.0
         self._abs_target_sum = 0.0
         self._direction: deque[float] = deque(maxlen=directional_window)
+        # rolling (prediction, target) pairs for residual/calibration diagnostics
+        self._pairs: deque[tuple[float, float]] = deque(maxlen=2000)
+        self._coverage: deque[float] = deque(maxlen=2000)  # ev only: y in [q25, q75]
         self.n_learned = 0
 
     def predict_one(self, features: dict[str, float]) -> float:
@@ -119,6 +122,15 @@ class OnlineModel:
         self._abs_target_sum += abs(target)
         if pred != 0.0 and target != 0.0:
             self._direction.append(1.0 if (pred > 0) == (target > 0) else 0.0)
+        self._pairs.append((pred, target))
+        if self.kind == "ev":
+            # interval coverage with the CURRENT quantile heads (standard online
+            # approximation): a calibrated q25/q75 pair should contain ~50% of
+            # realized outcomes. Persistent deviation = miscalibrated quantiles.
+            q25 = float(self._quantiles[0.25].predict_one(features) or 0.0)
+            q75 = float(self._quantiles[0.75].predict_one(features) or 0.0)
+            y_bps = target * 1e4
+            self._coverage.append(1.0 if min(q25, q75) <= y_bps <= max(q25, q75) else 0.0)
         if self.kind == "classifier":
             cls = 1 if target > self.band else -1 if target < -self.band else 0
             if cls != 0:  # track typical tail magnitude for the expected-return proxy
@@ -144,7 +156,7 @@ class OnlineModel:
 
     def metrics(self) -> dict[str, float]:
         n = max(1, self.n_learned)
-        return {
+        out = {
             "n": float(self.n_learned),
             "mae": self._abs_err_sum / n,
             "zero_mae": self._abs_target_sum / n,  # baseline: always predict 0
@@ -152,3 +164,50 @@ class OnlineModel:
                 sum(self._direction) / len(self._direction) if self._direction else float("nan")
             ),
         }
+        out.update(self.diagnostics())
+        return out
+
+    def diagnostics(self) -> dict[str, float]:
+        """Rolling residual/calibration diagnostics over the last <=2000 labels.
+
+        All in bps where dimensional: bias (mean residual — persistent sign =
+        systematic over/under-prediction), resid_std, rolling R^2 (vs the
+        zero-prediction baseline; negative = worse than predicting nothing),
+        MAE edge %, commit rate (fraction of nonzero predictions — the
+        abstention dial), and for `ev` the empirical q25-q75 coverage
+        (target: ~0.50)."""
+        nan = float("nan")
+        if not self._pairs:
+            return {
+                "rolling_n": 0.0, "bias_bps": nan, "resid_std_bps": nan,
+                "r2": nan, "edge_pct": nan, "commit_rate": nan, "coverage": nan,
+            }
+        pairs = list(self._pairs)
+        m = len(pairs)
+        residuals = [(t - p) * 1e4 for p, t in pairs]
+        bias = sum(residuals) / m
+        resid_var = sum((r - bias) ** 2 for r in residuals) / m
+        ss_res = sum(((t - p) * 1e4) ** 2 for p, t in pairs)
+        ss_zero = sum((t * 1e4) ** 2 for p, t in pairs)  # baseline: predict 0
+        mae = sum(abs(t - p) for p, t in pairs) / m
+        zero_mae = sum(abs(t) for p, t in pairs) / m
+        return {
+            "rolling_n": float(m),
+            "bias_bps": bias,
+            "resid_std_bps": resid_var ** 0.5,
+            "r2": 1.0 - ss_res / ss_zero if ss_zero > 0 else nan,
+            "edge_pct": (1.0 - mae / zero_mae) * 100 if zero_mae > 0 else nan,
+            "commit_rate": sum(1 for p, _ in pairs if p != 0.0) / m,
+            "coverage": (
+                sum(self._coverage) / len(self._coverage) if self._coverage else nan
+            ),
+        }
+
+    def recent_pairs(self, limit: int = 150) -> list[tuple[float, float]]:
+        """Evenly downsampled (pred_bps, realized_bps) pairs for scatter plots;
+        nonzero predictions only (the committed ones are the interesting ones)."""
+        committed = [(p * 1e4, t * 1e4) for p, t in self._pairs if p != 0.0]
+        if len(committed) <= limit:
+            return committed
+        step = len(committed) / limit
+        return [committed[int(i * step)] for i in range(limit)]

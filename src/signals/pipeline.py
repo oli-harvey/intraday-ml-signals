@@ -310,7 +310,19 @@ class Pipeline:
             "proc_us_p50": float(np.percentile(lat, 50)),
             "proc_us_p99": float(np.percentile(lat, 99)),
             "per_symbol": {
-                s: {"n": m["n"], "dir": m["directional_acc"]} for s, m in metrics.items()
+                s: {
+                    "n": m["n"],
+                    "dir": m["directional_acc"],
+                    "bias_bps": m.get("bias_bps"),
+                    "resid_std_bps": m.get("resid_std_bps"),
+                    "r2": m.get("r2"),
+                    "edge_pct": m.get("edge_pct"),
+                    "commit_rate": m.get("commit_rate"),
+                    "coverage": m.get("coverage"),
+                    "rolling_n": m.get("rolling_n"),
+                    "pairs": self.pipes[s].model.recent_pairs(120),
+                }
+                for s, m in metrics.items()
             },
             "open_positions": self.book.open_count,
             "orders": self.orders_submitted,
