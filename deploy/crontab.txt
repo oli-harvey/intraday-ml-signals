@@ -3,12 +3,17 @@
 # merge by hand if other jobs exist; contrafact's digest/stats crons live in
 # the same user's crontab).
 #
-# NB: US market open is 14:30 UTC during EDT (Mar-Nov) but 15:30 UTC during
-# EST (Nov-Mar). Adjust at the November clock change, or move the box to
-# America/New_York-aware scheduling then.
+# Equities capture is DST-proof via deploy/run_equities_capture.sh, which asks
+# the OS tz database for the real 09:30-16:00 America/New_York session. Cron
+# starts it at 13:00 UTC (before both the EDT 13:30 and EST 14:30 opens); the
+# wrapper waits for the bell and records to the close. No November edit needed.
 
-# Weekday full-session equities recording (SPY dense + AAPL/NVDA followers)
-30 14 * * 1-5 cd $HOME/intraday-ml-signals && .venv/bin/python scripts/record.py --market stocks --symbols SPY AAPL NVDA --duration 23400 --db data/equities_$(date +\%F).duckdb >> logs/equities_cron.log 2>&1
+# Weekday full regular-session equities recording (SPY/AAPL/NVDA)
+0 13 * * 1-5 cd $HOME/intraday-ml-signals && bash deploy/run_equities_capture.sh >> logs/equities_cron.log 2>&1
+
+# Nightly equities out-of-sample screen -> Telegram (21:15 UTC, after close;
+# 21:15 clears both the EDT 20:00 and EST 21:00 closes)
+15 21 * * 1-5 cd $HOME/intraday-ml-signals && .venv/bin/python scripts/equities_digest.py --root . --env $HOME/digest.env >> logs/equities_digest_cron.log 2>&1
 
 # Nightly report on the live paper DB (03:10 UTC, after crypto day rollover)
 10 3 * * * cd $HOME/intraday-ml-signals && .venv/bin/python scripts/report.py --db data/paper_live.duckdb --out reports >> logs/report_cron.log 2>&1
