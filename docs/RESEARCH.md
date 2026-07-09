@@ -315,3 +315,44 @@ per-quote toll and discards information) — but the *decision* should come from
 the outcome distribution, not the mean: commit only when a pessimistic
 quantile clears zero, and let the policy charge costs. Mean-regression was the
 wrong shape for a trading decision; quantile intervals are.
+
+### 2026-07-09 — cross-venue replication across 6 pairs: CONFIRMED but ECONOMICALLY EMPTY
+
+First nightly auto-research (ev @ 5s, non-overlapping, per-pair sim). The
+staleness thesis is confirmed in DIRECTION and decisively refuted in ECONOMICS.
+
+| pair | n | dir | fade | d-best | MAE edge | sim net | spread | gap σ |
+|---|---|---|---|---|---|---|---|---|
+| BTC | 15526 | 0.622 | 0.566 | +0.057 | −1.4% | −100 | 11 | 1.9 |
+| ETH | 3346 | 0.856 | 0.467 | +0.323 | +14% | 0 | 11 | 3.7 |
+| LTC | 893 | 0.700 | 0.469 | +0.169 | −5.7% | −165 | 69 | 11.1 |
+| DOGE | 1158 | 0.911 | 0.480 | +0.39 | +10.5% | −211 | 39 | 5.5 |
+| LINK | 1042 | 0.932 | 0.469 | +0.40 | +37% | +4 | 21 | 3.8 |
+| SOL | 1329 | 0.933 | 0.508 | +0.42 | +30% | −27 | 45 | 6.0 |
+
+**Confirmed:** d-best scales inversely with liquidity exactly as predicted —
+BTC (densest) +0.057, sparse alts +0.32–0.42, directional accuracy up to 0.93.
+The venue gap genuinely predicts the follower's next move; ETH replicates the
+07-08 BTC result and the alts amplify it.
+
+**But it is not alpha — it's stale-quote convergence.** Two tells:
+1. **0.93 directional accuracy that LOSES money** (DOGE −211bps, LTC −165bps on
+   real cost-charged sims). Direction without magnitude, the project's core
+   lesson, in its most extreme form yet.
+2. **The move is ~1/6 of the toll on every pair.** gap σ / spread: BTC 0.17,
+   ETH 0.34, SOL 0.13, DOGE 0.14, LTC 0.16, LINK 0.18. Alt spreads are 21–69bps;
+   the gap-driven move is 4–11bps. The universe got bigger but the move/toll
+   ratio (notebook 05) is unchanged — we just scaled both signal and toll.
+
+Mechanism: Alpaca's thin alt venue mid lags dense Coinbase and mechanically
+catches up. "Predict that a stale number will update" is trivially accurate and
+worthless — you'd trade at Alpaca's post-catch-up, wide-spread price. High
+d-best on illiquid venues is a DATA-QUALITY signature, not an opportunity.
+
+Consequences:
+- The cross-venue edge is REAL but UNTRADEABLE at Alpaca crypto spreads. The
+  only path to capture is cutting the toll below the move: maker/limit orders
+  at/inside the mid (needs a fill-probability model), or a cheaper venue.
+- Decisive next test still worth running: a sign(gap) baseline — if it matches
+  the model's 0.93, the ML adds nothing over the raw gap (very likely here).
+- Do NOT chase the shiny alt d-best numbers. They are the artifact, not the win.
