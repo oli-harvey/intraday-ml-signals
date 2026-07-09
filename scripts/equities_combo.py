@@ -11,12 +11,13 @@ Run:  .venv/bin/python scripts/equities_combo.py
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import glob
 
 from signals.evaluation import evaluate
 from signals.features.engine import FeatureConfig
 
-DBS = ["data/equities_2026-07-06.duckdb", "data/equities_2026-07-07.duckdb"]
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
 HORIZONS = [5.0, 10.0]
 DEAD_ZONES = [0.5, 2, 4, 8]
@@ -24,6 +25,11 @@ MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s", "micr
 
 
 async def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dbs", nargs="+",
+                    default=sorted(glob.glob("data/equities_2026-*.duckdb")))
+    args = ap.parse_args()
+    DBS = args.dbs
     cfg = FeatureConfig(exclude=tuple(MICRO))  # no-micro (the ablation winner)
     for db in DBS:
         print(f"\n########## {db}  (no-micro, ev) ##########")

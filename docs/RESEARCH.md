@@ -442,7 +442,7 @@ single-digit-bp losses (much closer to the line) vs crypto's 20–96 bp chasm. T
 next real question is whether any equities microstructure signal clears a 1–3 bp
 toll; crypto cross-venue is a closed book for economics.
 
-## 2026-07-09 — EQUITIES: first cost-surviving config (NVDA 5s, no-micro EV, replicated)
+## 2026-07-09 — EQUITIES: a 2-session NVDA edge that FAILED out-of-sample (retracted)
 
 Pivoted to equities (zero-commission, 1-3bp spreads) after crypto cross-venue
 closed. New tooling: `scripts/equities_eval.py` (EV horizon sweep vs baselines,
@@ -471,20 +471,42 @@ NVDA 10s -0.90, SPY 5s -0.70. Real reversion, a hair under the toll.
 | AAPL 5s dz8 | −2.60 / 17 | +0.13 / 38 |
 | SPY (any) | mixed/neg | mixed/neg |
 
-**FINDING: NVDA @ 5s, no-micro EV, dead-zone ≈ 4bp is net-positive (+1.2bps/trade)
-on BOTH sessions** — the first config in the project to survive costs out-of-sample.
-It's a plateau (dz4 AND dz8 both replicate), NVDA d-best over baseline +0.013/+0.030
-replicated, ~100-300 trades/session. Only 5s replicates; 10s is a 07-07-only fluke.
-No-micro is load-bearing (lifts NVDA d-best 0.005->0.030).
+**PRELIMINARY (2-session) finding — later OVERTURNED, see below:** NVDA @ 5s,
+no-micro EV, dz≈4bp was net-positive (+1.30/+1.17) on 07-06 and 07-07. I flagged it
+as needing ~5 sessions before belief. It did not survive the third.
 
-**Skepticism / before believing it:** (1) only 2 sessions — could be a favourable
-NVDA regime, not an edge; needs 5-10+ sessions. (2) sim charges spread once at fee=0
-and assumes instant mid±half-spread fills — real slippage/queue not modelled (cf.
-the maker-fill reality on crypto). (3) allow_short=True — if the edge is short-heavy,
-the live long-only book (crypto-era) captures less; equities shorting needs a margin
-account. (4) dead-zone selection is post-hoc; live policy must commit to dz≈4 upfront.
+### 2026-07-09 (same day) — THIRD session (07-08) BREAKS it. Finding retracted.
 
-**Next:** record more NVDA sessions (extend the live capture to equities during
-market hours), re-run the combo per new session for a rolling out-of-sample count,
-and only after ~5 green sessions consider a paper-live NVDA config (5s, no-micro,
-dz4, with short support + honest fill assumptions). Do NOT deploy on 2 days.
+Pulled `equities_2026-07-08.duckdb` (already captured by the server cron — 5.4M
+events) as an independent out-of-sample test. NVDA 5s, no-micro, per dead-zone:
+
+| cell | 07-06 | 07-07 | **07-08** | verdict |
+|------|-------|-------|-----------|---------|
+| NVDA 5s dz2 | −0.22 | +0.06 | **−1.11** | fails |
+| NVDA 5s dz4 | +1.30 | +1.17 | **−1.48** | **fails** |
+| NVDA 5s dz8 | +3.53 | +0.68 | **−2.24** | fails |
+| AAPL 5s dz8 | −2.60 | +0.13 | +1.58 | fails (07-06 neg) |
+
+**On 07-08 NVDA has the HIGHEST direction of the three sessions (dir 0.689, d-best
++0.067) yet loses at EVERY dead-zone.** No (symbol, horizon, dz) cell is green on
+all three sessions; the "edge" hops between names by day (NVDA on 06/07, AAPL on
+07/08). The 2-session result was **overfitting to two favourable days** — the
+out-of-sample discipline did its job and caught a false positive. High direction
+that still loses = the project's core lesson once more: direction ≠ net edge.
+
+**Honest state of equities:** liquid US-equity intraday reversion is real and only
+~1bp under the toll (vastly closer than crypto), but no config in this toolkit
+clears it repeatably across independent sessions. Not closed the way crypto is —
+the gap is tiny — but there is no demonstrated out-of-sample edge. Same conclusion
+as everything before it: below-cost signal, no free lunch.
+
+**Superseded skepticism list (all now moot, kept for the record):** only 2 sessions;
+idealised fills; allow_short; post-hoc dead-zone. The first one (n=2) was the fatal one.
+
+**Process win to keep:** the server already captures a dated equities session every
+weekday (cron -> `record.py`, `equities_<date>.duckdb`). The right standing use is a
+ROLLING out-of-sample screen: eval each new session and only chase a config that is
+green across many independent days — never on 2. `scripts/equities_combo.py --dbs …`
+is the per-session screen. Cron timing note: it records 14:30-21:00 UTC, which in EDT
+misses the 13:30-14:30 opening hour and includes ~1h of after-hours — worth fixing to
+13:30-20:00 UTC (true regular session) if equities work resumes.
