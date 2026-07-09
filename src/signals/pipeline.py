@@ -42,6 +42,11 @@ from .storage.coldstore import ColdStore, LogOrder, LogPrediction, LogRecord, Lo
 
 log = logging.getLogger(__name__)
 
+# Bump when the pickled shape of pipes/models changes, so a stale state file is
+# rejected (start fresh) instead of loading objects missing new attributes and
+# crashing later. 2 = added OnlineModel rolling diagnostics (_pairs/_coverage).
+STATE_SCHEMA_VERSION = 2
+
 
 @dataclass
 class PipelineConfig:
@@ -100,6 +105,7 @@ class Pipeline:
         )
         self._state_path = os.path.join(os.path.dirname(config.db_path) or ".", "model_state.pkl")
         self._state_sig = (
+            STATE_SCHEMA_VERSION,
             config.model_kind,
             config.horizon_s,
             tuple(sorted(config.symbols)),
@@ -126,7 +132,13 @@ class Pipeline:
             if state.get("sig") != self._state_sig:
                 log.info("model state signature mismatch; starting fresh")
                 return
-            self.pipes = state["pipes"]
+            pipes = state["pipes"]
+            # Belt-and-suspenders: reject a structurally incompatible restore
+            # even if the signature somehow matched (defends against forgetting
+            # to bump STATE_SCHEMA_VERSION).
+            for p in pipes.values():
+                p.model.diagnostics()  # touches the new attributes; raises if stale
+            self.pipes = pipes
             self.leader_engines = state["leaders"]
             # crossfeed is shared by reference inside the pickle; rebind ours
             for engine in [
