@@ -441,3 +441,50 @@ theoretical escape is not execution but a market where the toll is structurally
 single-digit-bp losses (much closer to the line) vs crypto's 20–96 bp chasm. The
 next real question is whether any equities microstructure signal clears a 1–3 bp
 toll; crypto cross-venue is a closed book for economics.
+
+## 2026-07-09 — EQUITIES: first cost-surviving config (NVDA 5s, no-micro EV, replicated)
+
+Pivoted to equities (zero-commission, 1-3bp spreads) after crypto cross-venue
+closed. New tooling: `scripts/equities_eval.py` (EV horizon sweep vs baselines,
+zero-fee cost sim), `scripts/equities_selectivity.py` (dead-zone selectivity +
+no-micro ablation), `scripts/equities_combo.py` (both knobs, replicated on both
+sessions). Data: `equities_2026-07-06/07.duckdb`, SPY/AAPL/NVDA, ~6.5h each.
+
+**Step 1 — EV alone (full features):** losses now ~1bp (vs crypto 20-96bp) but no
+edge over the fade baseline (d-best ~0) and overtrades (800-1500 trades). Best
+NVDA 10s -0.90, SPY 5s -0.70. Real reversion, a hair under the toll.
+
+**Step 2 — two knobs, each helps one name:**
+- SELECTIVITY (raise the dead-zone): NVDA 10s dz4 -> -0.19bps (near breakeven);
+  SPY dz2 -0.92. AAPL gets worse with selectivity.
+- NO-MICRO ABLATION (drop spread/imbalance/flow/micro/uptick/dt): replicates the
+  crypto finding on AAPL — flips it from d-best -0.049 (losing to fade) to +0.002
+  (beating fade); momentum/lag carries the signal, micro distracts. SPY worse.
+
+**Step 3 — combine (no-micro + selectivity), replicated on BOTH sessions:**
+
+| cell | 07-06 net/trades | 07-07 net/trades |
+|------|------------------|------------------|
+| **NVDA 5s dz4** | **+1.30 / 117** | **+1.17 / 312** |
+| NVDA 5s dz8 | +3.53 / 41 | +0.68 / 126 |
+| NVDA 10s dz4 | −0.91 / 100 | +1.43 / 183 |
+| AAPL 5s dz8 | −2.60 / 17 | +0.13 / 38 |
+| SPY (any) | mixed/neg | mixed/neg |
+
+**FINDING: NVDA @ 5s, no-micro EV, dead-zone ≈ 4bp is net-positive (+1.2bps/trade)
+on BOTH sessions** — the first config in the project to survive costs out-of-sample.
+It's a plateau (dz4 AND dz8 both replicate), NVDA d-best over baseline +0.013/+0.030
+replicated, ~100-300 trades/session. Only 5s replicates; 10s is a 07-07-only fluke.
+No-micro is load-bearing (lifts NVDA d-best 0.005->0.030).
+
+**Skepticism / before believing it:** (1) only 2 sessions — could be a favourable
+NVDA regime, not an edge; needs 5-10+ sessions. (2) sim charges spread once at fee=0
+and assumes instant mid±half-spread fills — real slippage/queue not modelled (cf.
+the maker-fill reality on crypto). (3) allow_short=True — if the edge is short-heavy,
+the live long-only book (crypto-era) captures less; equities shorting needs a margin
+account. (4) dead-zone selection is post-hoc; live policy must commit to dz≈4 upfront.
+
+**Next:** record more NVDA sessions (extend the live capture to equities during
+market hours), re-run the combo per new session for a rolling out-of-sample count,
+and only after ~5 green sessions consider a paper-live NVDA config (5s, no-micro,
+dz4, with short support + honest fill assumptions). Do NOT deploy on 2 days.
