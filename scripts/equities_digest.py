@@ -24,6 +24,7 @@ import asyncio
 import datetime as dt
 import glob
 import json
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -48,12 +49,27 @@ def load_env(path: str) -> dict[str, str]:
 
 
 def send(creds: dict[str, str], text: str) -> None:
-    data = urllib.parse.urlencode(
-        {"chat_id": creds["TELEGRAM_CHAT_ID"], "text": f"equities: {text}"}
-    ).encode()
+    # HTML parse mode so the <pre> block renders as an aligned monospace table.
+    data = urllib.parse.urlencode({
+        "chat_id": creds["TELEGRAM_CHAT_ID"], "text": text,
+        "parse_mode": "HTML", "disable_web_page_preview": "true",
+    }).encode()
     url = f"https://api.telegram.org/bot{creds['TELEGRAM_BOT_TOKEN']}/sendMessage"
     with urllib.request.urlopen(url, data=data, timeout=15) as resp:
         resp.read()
+
+
+def account_line(root: Path) -> str:
+    """Paper-account balance from the crypto pipeline's status.json (one shared
+    Alpaca paper account; equities is capture-only, so this is the whole acct)."""
+    try:
+        st = json.loads((root / "data" / "status.json").read_text())
+        age = time.time() - st.get("ts", 0)
+        fresh = "" if age < 600 else " ⚠stale"
+        return (f"paper acct ${st.get('equity', 0):,.0f} "
+                f"(today {st.get('pnl_today', 0.0):+.2f}){fresh}")
+    except (OSError, ValueError):
+        return "paper acct n/a"
 
 
 def latest_db(root: Path, explicit: str | None) -> Path | None:
@@ -76,9 +92,12 @@ async def screen(db: Path) -> dict[str, dict]:
         seg = sc.overall()
         sim = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS)
         out[sym] = {
+            "dir": seg.dir_acc,
+            "base": seg.dir_best_baseline,
             "d_best": seg.dir_acc - seg.dir_best_baseline,
             "net_bps": sim.avg_net_bps,
             "trades": sim.trades,
+            "hit": sim.hit_rate,
         }
     return out
 
@@ -121,15 +140,25 @@ def main() -> None:
     history = root / "logs" / "equities_digest_history.jsonl"
     tally = rolling_green(history, result)
 
-    # e.g. "2026-07-09 (5s no-micro dz4): NVDA -1.5bps/325t d+0.07 g0/3 | AAPL ..."
-    parts = []
+    # Aligned monospace table inside <pre> (Telegram HTML). Columns:
+    # dir = model direction acc, base = best naive baseline, Δd = edge over it,
+    # net/tr = avg net bps per trade & trade count, hit = win rate, g = rolling
+    # green sessions / total (the out-of-sample consistency check).
+    head = f"{'sym':<5}{'dir':>5}{'base':>6}{'Δd':>6}{'net':>7}{'tr':>5}{'hit':>5}{'g':>6}"
+    lines = [head]
     for sym in SYMBOLS:
         r = result[sym]
-        parts.append(
-            f"{sym} {r['net_bps']:+.1f}bps/{r['trades']}t "
-            f"d{r['d_best']:+.02f} g{tally[sym]}"
+        lines.append(
+            f"{sym:<5}{r['dir']:>5.2f}{r['base']:>6.2f}{r['d_best']:>+6.2f}"
+            f"{r['net_bps']:>+7.1f}{r['trades']:>5d}{r['hit'] * 100:>4.0f}%{tally[sym]:>6}"
         )
-    msg = f"{day} (5s no-micro dz4): " + " | ".join(parts)
+    table = "\n".join(lines)
+    msg = (
+        f"📊 <b>equities OOS · {day}</b>\n"
+        f"{account_line(root)}\n"
+        f"ev no-micro · 5s · dead-zone {DEAD_ZONE_BPS:g}bp · fee 0\n"
+        f"<pre>{table}</pre>"
+    )
 
     if args.no_send:
         print(msg)
