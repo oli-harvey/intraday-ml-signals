@@ -402,3 +402,42 @@ capture the move at/inside the mid instead of paying the full spread, a genuine
 now the arbiter — and it must also rule out that the alt 0.94 is a sparse-quote
 resolution artifact (first-price-after-horizon on a thin venue) rather than a move
 you could actually fill against.
+
+## 2026-07-09 — maker/limit-order sim: passive execution does NOT rescue it (lever closed)
+
+The arbiter (`scripts/maker_sim.py`). Same model-committed signals, three
+executions; passive fills walk the ACTUAL future quote path (no assumed fill),
+so adverse selection is modelled honestly. ev @ 5s, taker_fee 5bps, maker_fee 0
+(ceiling — Alpaca's real maker fee ~15bps would negate most of this anyway).
+
+net bps/trade (fill% = fills/attempts), wait-window sweep:
+
+| pair | taker | mk_in/tk @2s | @30s | mk/mk @30s | fill% @2s→30s |
+|------|-------|--------------|------|------------|---------------|
+| BTC  | −20.7 | −8.5 (2%) | −8.5 (8%) | −4.6 | 2→8% |
+| ETH  | −19.6 | −12.7 (2%) | −13.3 (9%) | −9.6 | 2→9% |
+| SOL  | −54.3 | −24.7 (0%) | −26.0 (1%) | −24.4 | 0→1% |
+| DOGE | −46.0 | −21.8 (0%) | −20.0 (2%) | −20.0 | 0→2% |
+| LTC  | −86.1 | −25.5 (0%) | −22.3 (0%) | −22.3 | 0→0% |
+| LINK | −29.5 | −23.6 (0%) | −17.3 (2%) | −16.3 | 0→2% |
+
+**Two independent walls, both fatal:**
+1. **Nothing goes positive.** Passive execution ~halves the toll (BTC −21→−8) but
+   the move is smaller than even the maker-reduced cost. Best case anywhere is
+   BTC mk/mk −4.6 bps at a 30s rest.
+2. **Fill rate collapses (0–9%).** This is the deeper, structural wall: a
+   *directionally correct* signal is intrinsically un-fillable passively — when
+   the model is right (0.94 on alts) price runs AWAY from your resting bid, so you
+   only fill on the minority that dip toward you (adverse selection). Longer rests
+   barely lift fills and add adverse selection. Worst exactly where direction is
+   best: the thin alts fill ~0–2%.
+
+**Verdict: the maker lever is CLOSED on Alpaca crypto.** Both queued levers
+(sign(gap), maker sim) are now exhausted. The cross-venue signal is real but the
+per-trade move (a few bps) is below *any* executable cost, taker or maker, and a
+correct directional predictor cannot be executed passively at all. The remaining
+theoretical escape is not execution but a market where the toll is structurally
+1–3 bps not 20–70 bps — i.e. **equities**, where prior sessions already showed
+single-digit-bp losses (much closer to the line) vs crypto's 20–96 bp chasm. The
+next real question is whether any equities microstructure signal clears a 1–3 bp
+toll; crypto cross-venue is a closed book for economics.
