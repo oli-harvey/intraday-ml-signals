@@ -10,6 +10,10 @@
 /data/
 *.parquet
 
+# Runtime logs & state (status.json, alert_state, research/digest history) —
+# these live on the server only; deploy is `git reset --hard`, never commits them.
+/logs/
+
 # Python
 __pycache__/
 *.py[cod]
