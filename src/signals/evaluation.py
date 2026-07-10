@@ -87,16 +87,25 @@ class SymbolScore:
         fee_bps: float = 5.0,
         dead_zone_bps: float = 2.0,
         allow_short: bool = True,
+        max_spread_bps: float | None = None,
     ) -> TradeSim:
         """Sequential trades (one position at a time, held for the horizon),
         entering only when |prediction| clears fee + half-spread + dead-zone —
         the same rule as the live SignalPolicy. Round trip is charged the full
-        spread plus two fees. Exits at the realized horizon price."""
+        spread plus two fees. Exits at the realized horizon price.
+
+        max_spread_bps: spread-conditional entry — skip signals whose quoted
+        spread exceeds the cap (the slot stays free). Since the round-trip toll
+        IS the spread, trading only tight-spread moments cuts the toll without
+        needing a larger edge; the test is whether the direction edge survives
+        the tight-spread subset."""
         sim = TradeSim()
         busy_until = -(10**18)
         for r in self.rows:
             if r.ts_ns < busy_until:
                 continue  # position still open from a previous signal
+            if max_spread_bps is not None and r.spread_bps > max_spread_bps:
+                continue  # spread too wide — don't pay this toll
             threshold = (fee_bps + 0.5 * r.spread_bps + dead_zone_bps) / 1e4
             if r.prediction > threshold:
                 direction = 1.0

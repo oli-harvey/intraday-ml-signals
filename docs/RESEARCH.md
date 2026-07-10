@@ -554,3 +554,47 @@ without needing a bigger edge. This is the equities analog of the (failed) crypt
 maker lever, but here the fill isn't the problem, the toll variance is. Worth a
 session-joint test before more model work. Also: SPY has no edge and can be dropped
 from the trade set (keep capturing it as the liquidity/context reference).
+
+## 2026-07-10 — SPREAD-CONDITIONAL entry: first robust config (NVDA), with a short-side asterisk
+
+The lever from the joint screen: the single-name direction edge is stable but sub-toll,
+so cap the quoted spread at entry (`simulate_trading(max_spread_bps=…)`, condition is
+known at decision time — legitimately tradeable, unlike the crypto gap). Swept dz × cap
+across all 4 sessions, plus a slippage-haircut robustness filter and a long-only pass
+(`scripts/equities_spread.py`).
+
+**Capping the spread converts the stable edge to net-green — a gradient, not a lucky cell.**
+No cap: AAPL/NVDA 0–2/4 green. Cap spread <2bp: both go **4/4 green** across all 4 sessions
+with real trade counts. SPY: 0/4 at every cap (no edge — the efficient index).
+
+| config (5s no-micro EV, long+short) | 4/4 green | mean net | med trades | survives −1bp haircut |
+|---|---|---|---|---|
+| **NVDA dz4, spread<2bp** | yes | **+2.5bps** | 146 | **YES (only one)** |
+| NVDA dz2, spread<2bp | yes | +1.2 | 296 | no (dies −1bp) |
+| NVDA dz4, spread<1.5bp | yes | +2.1 | 115 | no |
+| AAPL dz4, spread<2bp | yes | +1.3 | 65 | no (knife-edge, flips 4/4↔3/4 on numerical hair) |
+
+**The one robust config: NVDA, 5s, no-micro EV, dead-zone 4bp, spread<2bp** — 4/4 green
+AND survives a 1bp/trade slippage haircut (+2.5 → +1.5), ~146 trades/session. Everything
+else is too thin to trust against real fills.
+
+**Two hard caveats, both checked:**
+1. **SHORT-DEPENDENT.** Long-only, NOTHING is 4/4 green even at zero haircut (best NVDA
+   dz2<2 = 3/4). The edge lives substantially on the short side. Deployment therefore
+   needs a margin account + borrow, and the pipeline's PositionBook is currently long-only
+   (crypto-era). This is the main blocker.
+2. **Trend confound — checked, largely REFUTED for NVDA.** Session open→close: NVDA rose
+   3/4 days (+3.4/+4.2/+1.0%, one −0.1%) yet the edge is short-biased — so the shorts fade
+   intraday *rallies that revert*, not a downtrend, and at 5s the daily drift is ~0.1bp/
+   window (negligible). NVDA's short-bias is reversion ASYMMETRY (up-moves snap back harder
+   than dips), a real microstructure effect. AAPL fell 3/4 days, so its weaker short edge
+   IS partly trend beta — consistent with it failing the haircut anyway.
+
+**Status:** the first genuinely promising, mechanistically-defensible, replicated (4/4) and
+slippage-robust result in the project — NVDA 5s reversion, spread-gated, short-biased. NOT
+yet proven: 4 sessions only, all a high-vol NVDA week (+3-4% days), idealised fills, and it
+needs short infrastructure. **Next:** (a) accumulate more sessions incl. calm/ up-quiet
+regimes via the running capture; (b) add spread-cap + a `<2bp` gate to the digest so the
+NVDA config's daily net is tracked in the rolling screen; (c) only after ~10 green sessions
+across regimes, consider short support in the book + a paper-live NVDA dry-run. Do NOT
+deploy on 4 high-vol days.
