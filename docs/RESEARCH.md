@@ -510,3 +510,47 @@ green across many independent days — never on 2. `scripts/equities_combo.py --
 is the per-session screen. Cron timing note: it records 14:30-21:00 UTC, which in EDT
 misses the 13:30-14:30 opening hour and includes ~1h of after-hours — worth fixing to
 13:30-20:00 UTC (true regular session) if equities work resumes.
+
+## 2026-07-10 — JOINT 4-session screen: net not repeatable, but a STABLE direction edge
+
+After the 07-08 retraction, ran a proper joint screen over all 4 captured sessions
+(`scripts/equities_joint.py`, 5s no-micro EV, green-count per (sym,dz) + per-session
+d-best). Sessions 07-06/07/08/09 (all still the old 14:30-21:00 UTC window; the DST
+fix applies from 07-10). Last night's digest cron fired automatically (07-09 logged).
+
+**Net bps (green sessions / 4):**
+
+| sym | dz2 | dz4 | dz8 | best mean |
+|-----|-----|-----|-----|-----------|
+| SPY | 0/4 | 0/4 | 0/4 | −0.91 (dead — efficient index) |
+| AAPL | 1/4 | 1/4 | 2/4 | −0.91 |
+| NVDA | 1/4 | **3/4** | 2/4 | **+0.31** (dz4: +0.9/+1.1/−1.1/+0.4) |
+
+NVDA 5s dz4 is the best config in the project — 3/4 green, mean +0.31 bps — but
+07-08 still breaks it and the magnitude is within noise. Not a deployable edge.
+
+**Direction edge over baseline (d-best) per session — the actual finding:**
+
+| sym | 07-06 | 07-07 | 07-08 | 07-09 | mean |
+|-----|-------|-------|-------|-------|------|
+| SPY | −0.041 | −0.016 | −0.001 | −0.006 | −0.016 (no edge) |
+| AAPL | +0.036 | +0.021 | +0.015 | +0.020 | **+0.023 (all 4 positive)** |
+| NVDA | +0.021 | +0.032 | +0.068 | +0.075 | **+0.049 (all 4 positive, rising)** |
+
+**This is the honest, replicated result:** the no-micro EV model has a small but
+CONSISTENT directional edge over the best naive baseline on single-name tech
+(NVDA, AAPL) — positive on all 4 independent sessions — and NONE on the index
+(SPY). That part is not day-hopping noise. What is *not* stable is converting that
+edge to net profit: d-best of +0.02..+0.075 is marginal against the ~1-3bp spread,
+so net lands green only sometimes (NVDA dz4 3/4). Retraction of the *net* claim
+stands; what's new is that the *direction* signal is real and repeatable, just
+sub-toll. Separates "is there a signal?" (yes, weak, single-names only) from "can
+we monetise it?" (not yet).
+
+**Concrete next lever (untested):** the net sim charges the full spread every trade.
+Since the direction edge is stable, SPREAD-CONDITIONAL entry — trade only when the
+quoted spread is tight — could convert a stable ~2-7% direction edge into net-green
+without needing a bigger edge. This is the equities analog of the (failed) crypto
+maker lever, but here the fill isn't the problem, the toll variance is. Worth a
+session-joint test before more model work. Also: SPY has no edge and can be dropped
+from the trade set (keep capturing it as the liquidity/context reference).
