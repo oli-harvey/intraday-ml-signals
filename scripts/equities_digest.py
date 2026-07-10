@@ -201,13 +201,22 @@ def main() -> None:
     # deployable-in-a-cash-account version — the edge is short-dependent, so this
     # shows how much survives without shorting), tr = trades, hit = win rate,
     # g = rolling green sessions / total for THIS config (out-of-sample check).
+    def cell(x: float, w: int, prec: int, plus: bool = True) -> str:
+        """Right-justified numeric cell; '—' for NaN (e.g. a symbol with no
+        trades after the spread gate) instead of an alarming '+nan'."""
+        if x != x:  # NaN
+            return f"{'—':>{w}}"
+        return f"{x:>{'+' if plus else ''}{w}.{prec}f}"
+
     head = f"{'sym':<5}{'dir':>5}{'Δd':>6}{'net':>6}{'Lnet':>6}{'tr':>5}{'hit':>5}{'g':>6}"
     lines = [head]
     for sym in SYMBOLS:
         r = result[sym]
+        hit = f"{r['hit'] * 100:>4.0f}%" if r['hit'] == r['hit'] else f"{'—':>5}"
         lines.append(
-            f"{sym:<5}{r['dir']:>5.2f}{r['d_best']:>+6.2f}{r['net_bps']:>+6.1f}"
-            f"{r['net_lo']:>+6.1f}{r['trades']:>5d}{r['hit'] * 100:>4.0f}%{tally[sym]:>6}"
+            f"{sym:<5}{cell(r['dir'], 5, 2, plus=False)}{cell(r['d_best'], 6, 2)}"
+            f"{cell(r['net_bps'], 6, 1)}{cell(r['net_lo'], 6, 1)}"
+            f"{r['trades']:>5d}{hit}{tally[sym]:>6}"
         )
     table = "\n".join(lines)
     msg = (
