@@ -35,8 +35,13 @@ from signals.features.engine import FeatureConfig
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
 HORIZON_S = 5.0
 DEAD_ZONE_BPS = 4.0  # the flagship config's selectivity bar
+SPREAD_CAP_BPS = 2.0  # spread-conditional entry: only trade when spread < this
 MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s", "micro_over_spread"]
 GREEN_WINDOW = 10  # rolling tally over the last N sessions
+# Config id stamped on every history row; the rolling tally counts ONLY rows with
+# the current id, so changing the config starts a clean tally (no mixing nets from
+# a different rule). The tracked candidate is NVDA (RESEARCH.md 2026-07-10).
+CONFIG_ID = f"ev_nomicro_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}_sc{SPREAD_CAP_BPS:g}"
 
 
 def load_env(path: str) -> dict[str, str]:
@@ -81,7 +86,11 @@ def latest_db(root: Path, explicit: str | None) -> Path | None:
 
 
 async def screen(db: Path) -> dict[str, dict]:
-    """Per-symbol day result at the candidate config (no-micro EV @ 5s, dz4)."""
+    """Per-symbol day result at the candidate config: no-micro EV @ 5s, dz4,
+    spread-conditional entry (only trade when the quoted spread < SPREAD_CAP_BPS)
+    — the 4/4-green, slippage-robust NVDA config (RESEARCH.md 2026-07-10). net is
+    long+short (the edge is short-dependent); net_lo is the long-only version so
+    the short-dependence is visible in the daily number."""
     cfg = FeatureConfig(exclude=tuple(MICRO))
     res = await evaluate(str(db), SYMBOLS, model_kind="ev", horizon_s=HORIZON_S,
                          non_overlapping=True, feature_config=cfg)
@@ -90,12 +99,16 @@ async def screen(db: Path) -> dict[str, dict]:
     for sym in SYMBOLS:
         sc = res.symbols[sym]
         seg = sc.overall()
-        sim = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS)
+        sim = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
+                                  max_spread_bps=SPREAD_CAP_BPS)
+        lo = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
+                                 max_spread_bps=SPREAD_CAP_BPS, allow_short=False)
         out[sym] = {
             "dir": seg.dir_acc,
             "base": seg.dir_best_baseline,
             "d_best": seg.dir_acc - seg.dir_best_baseline,
             "net_bps": sim.avg_net_bps,
+            "net_lo": lo.avg_net_bps,
             "trades": sim.trades,
             "hit": sim.hit_rate,
         }
@@ -103,14 +116,19 @@ async def screen(db: Path) -> dict[str, dict]:
 
 
 def rolling_green(history_path: Path, today: dict[str, dict]) -> dict[str, str]:
-    """green/total over the last GREEN_WINDOW sessions per symbol (incl. today)."""
+    """green/total over the last GREEN_WINDOW sessions per symbol (incl. today).
+    Counts ONLY history rows scored with the CURRENT CONFIG_ID, so changing the
+    config (e.g. adding the spread cap) starts a clean tally instead of mixing
+    nets from a different trading rule."""
     rows = []
     if history_path.exists():
         for line in history_path.read_text().splitlines():
             try:
-                rows.append(json.loads(line))
+                r = json.loads(line)
             except ValueError:
-                pass
+                continue
+            if r.get("config") == CONFIG_ID:
+                rows.append(r)
     rows = rows[-(GREEN_WINDOW - 1):] + [{"result": today}]
     tally = {}
     for sym in SYMBOLS:
@@ -121,14 +139,51 @@ def rolling_green(history_path: Path, today: dict[str, dict]) -> dict[str, str]:
     return tally
 
 
+def backfill(root: Path, dbs: list[str]) -> None:
+    """Score past sessions under the CURRENT config and append history rows (no
+    send). Seeds the rolling tally so the candidate's track record shows up
+    immediately instead of building over days. Skips a day already recorded for
+    this config so re-runs don't double-count."""
+    history = root / "logs" / "equities_digest_history.jsonl"
+    seen = set()
+    if history.exists():
+        for line in history.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("config") == CONFIG_ID:
+                seen.add(r.get("day"))
+    history.parent.mkdir(parents=True, exist_ok=True)
+    for dbp in sorted(dbs):
+        day = Path(dbp).stem.replace("equities_", "")
+        if day in seen:
+            print(f"{day}: already recorded for {CONFIG_ID} — skip")
+            continue
+        result = asyncio.run(screen(Path(dbp)))
+        with history.open("a") as fh:
+            fh.write(json.dumps({
+                "ts": dt.datetime.now(dt.UTC).isoformat(), "day": day,
+                "db": Path(dbp).name, "config": CONFIG_ID, "result": result,
+            }) + "\n")
+        nv = result["NVDA"]
+        print(f"{day}: NVDA net {nv['net_bps']:+.2f} (Lnet {nv['net_lo']:+.2f}) — recorded")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", default=".")
     ap.add_argument("--env", default="/home/deploy/digest.env")
     ap.add_argument("--db", default=None, help="explicit DB (default: latest equities_*)")
     ap.add_argument("--no-send", action="store_true", help="print instead of Telegram")
+    ap.add_argument("--backfill", nargs="+", metavar="DB",
+                    help="score these past DBs into history (no send) then exit")
     args = ap.parse_args()
     root = Path(args.root)
+
+    if args.backfill:
+        backfill(root, args.backfill)
+        return
 
     db = latest_db(root, args.db)
     if db is None:
@@ -141,22 +196,25 @@ def main() -> None:
     tally = rolling_green(history, result)
 
     # Aligned monospace table inside <pre> (Telegram HTML). Columns:
-    # dir = model direction acc, base = best naive baseline, Δd = edge over it,
-    # net/tr = avg net bps per trade & trade count, hit = win rate, g = rolling
-    # green sessions / total (the out-of-sample consistency check).
-    head = f"{'sym':<5}{'dir':>5}{'base':>6}{'Δd':>6}{'net':>7}{'tr':>5}{'hit':>5}{'g':>6}"
+    # dir = model direction acc, Δd = edge over the best naive baseline, net =
+    # net bps/trade (long+short, the candidate), Lnet = long-only net (the
+    # deployable-in-a-cash-account version — the edge is short-dependent, so this
+    # shows how much survives without shorting), tr = trades, hit = win rate,
+    # g = rolling green sessions / total for THIS config (out-of-sample check).
+    head = f"{'sym':<5}{'dir':>5}{'Δd':>6}{'net':>6}{'Lnet':>6}{'tr':>5}{'hit':>5}{'g':>6}"
     lines = [head]
     for sym in SYMBOLS:
         r = result[sym]
         lines.append(
-            f"{sym:<5}{r['dir']:>5.2f}{r['base']:>6.2f}{r['d_best']:>+6.2f}"
-            f"{r['net_bps']:>+7.1f}{r['trades']:>5d}{r['hit'] * 100:>4.0f}%{tally[sym]:>6}"
+            f"{sym:<5}{r['dir']:>5.2f}{r['d_best']:>+6.2f}{r['net_bps']:>+6.1f}"
+            f"{r['net_lo']:>+6.1f}{r['trades']:>5d}{r['hit'] * 100:>4.0f}%{tally[sym]:>6}"
         )
     table = "\n".join(lines)
     msg = (
         f"📊 <b>equities OOS · {day}</b>\n"
         f"{account_line(root)}\n"
-        f"ev no-micro · 5s · dead-zone {DEAD_ZONE_BPS:g}bp · fee 0\n"
+        f"ev no-micro · 5s · dz{DEAD_ZONE_BPS:g} · spread&lt;{SPREAD_CAP_BPS:g}bp · fee 0\n"
+        f"candidate NVDA (short-dependent; Lnet=long-only)\n"
         f"<pre>{table}</pre>"
     )
 
@@ -169,7 +227,7 @@ def main() -> None:
     with history.open("a") as fh:
         fh.write(json.dumps({
             "ts": dt.datetime.now(dt.UTC).isoformat(), "day": day, "db": db.name,
-            "config": f"ev_nomicro_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}", "result": result,
+            "config": CONFIG_ID, "result": result,
         }) + "\n")
 
 
