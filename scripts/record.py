@@ -22,7 +22,8 @@ from signals.storage.coldstore import ColdStore
 
 async def main_async(args: argparse.Namespace) -> None:
     source = AlpacaSource(
-        load_alpaca_config(), market=args.market, subscribe_quotes=True, url=args.url
+        load_alpaca_config(), market=args.market, subscribe_quotes=True,
+        subscribe_trades=not args.no_trades, url=args.url
     )
     await source.subscribe(args.symbols)
     # Sized for equities burst rates on a small shared VPS (hit 10k cap there;
@@ -61,6 +62,10 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=1800)
     parser.add_argument("--db", default="data/session.duckdb")
     parser.add_argument("--market", choices=["crypto", "stocks"], default="crypto")
+    parser.add_argument("--no-trades", action="store_true",
+                        help="quotes only (Alpaca free IEX caps at 30 channel-subs; "
+                             "quotes-only doubles symbol coverage, and the no-micro "
+                             "strategy ignores trade-derived features anyway)")
     parser.add_argument("--url", default=None, help="WS URL override (e.g. the test stream)")
     args = parser.parse_args()
     uvloop.install()

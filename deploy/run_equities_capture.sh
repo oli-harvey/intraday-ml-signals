@@ -27,8 +27,20 @@ echo "$(date -u +%FT%TZ) plan: wait ${wait_s}s -> record ${dur}s -> $db"
 if [ "$dur" -le 0 ]; then echo "market already closed — skip"; exit 0; fi
 if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY_RUN — not recording"; exit 0; fi
 
+# 30 liquid names, quotes-only (Alpaca free IEX caps at 30 channel-subscriptions;
+# quotes-only fits 30 symbols vs 15 with trades, and the no-micro strategy uses no
+# trade-derived features). 3 index ETFs + mega-cap tech + semis + liquid retail —
+# the universe to screen nightly for repeatable single-name reversion edges.
+SYMBOLS="SPY QQQ IWM AAPL MSFT NVDA AMZN GOOGL META TSLA AMD AVGO NFLX \
+INTC MU MRVL SMCI ARM QCOM PLTR COIN SOFI F BAC T UBER DIS BABA NIO JPM"
+
+# Retention: 30 quotes-only symbols make ~0.3-0.5GB/session, so keep only the
+# newest 30 session DBs (~6 weeks, well past the 10-session rolling screen) to
+# stop the disk filling. Safe glob; deletes nothing else.
+ls -1t data/equities_2*.duckdb 2>/dev/null | tail -n +31 | xargs -r rm -f
+
 [ "$wait_s" -gt 0 ] && sleep "$wait_s"
 # Recompute duration after the wait so a slow start can't overrun the close.
 dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wait — skip"; exit 0; }
-exec .venv/bin/python scripts/record.py --market stocks \
-  --symbols SPY AAPL NVDA --duration "$dur" --db "$db"
+exec .venv/bin/python scripts/record.py --market stocks --no-trades \
+  --symbols $SYMBOLS --duration "$dur" --db "$db"

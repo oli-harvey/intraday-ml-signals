@@ -32,7 +32,8 @@ from pathlib import Path
 from signals.evaluation import evaluate
 from signals.features.engine import FeatureConfig
 
-SYMBOLS = ["SPY", "AAPL", "NVDA"]
+TRACKED = ["NVDA", "AAPL"]  # always shown + named as candidates (the 07-10 finding)
+DISPLAY_N = 14              # rows in the Telegram table (top movers by net + TRACKED)
 HORIZON_S = 5.0
 DEAD_ZONE_BPS = 4.0  # the flagship config's selectivity bar
 SPREAD_CAP_BPS = 2.0  # spread-conditional entry: only trade when spread < this
@@ -85,18 +86,32 @@ def latest_db(root: Path, explicit: str | None) -> Path | None:
     return Path(dbs[-1]) if dbs else None
 
 
+def db_symbols(db: Path) -> list[str]:
+    """Symbols captured in this session (auto-discovered so capture & digest never
+    drift). Excludes venue-prefixed leaders (e.g. CB:*) from the crypto store."""
+    import duckdb
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        rows = con.execute("SELECT DISTINCT symbol FROM quotes").fetchall()
+    finally:
+        con.close()
+    return sorted(s for (s,) in rows if ":" not in s)
+
+
 async def screen(db: Path) -> dict[str, dict]:
     """Per-symbol day result at the candidate config: no-micro EV @ 5s, dz4,
     spread-conditional entry (only trade when the quoted spread < SPREAD_CAP_BPS)
     — the 4/4-green, slippage-robust NVDA config (RESEARCH.md 2026-07-10). net is
     long+short (the edge is short-dependent); net_lo is the long-only version so
-    the short-dependence is visible in the daily number."""
+    the short-dependence is visible in the daily number. Screens every captured
+    symbol so new single-name reversion edges surface on their own."""
+    symbols = db_symbols(db)
     cfg = FeatureConfig(exclude=tuple(MICRO))
-    res = await evaluate(str(db), SYMBOLS, model_kind="ev", horizon_s=HORIZON_S,
+    res = await evaluate(str(db), symbols, model_kind="ev", horizon_s=HORIZON_S,
                          non_overlapping=True, feature_config=cfg)
     hn = int(HORIZON_S * 1e9)
     out = {}
-    for sym in SYMBOLS:
+    for sym in symbols:
         sc = res.symbols[sym]
         seg = sc.overall()
         sim = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
@@ -131,7 +146,7 @@ def rolling_green(history_path: Path, today: dict[str, dict]) -> dict[str, str]:
                 rows.append(r)
     rows = rows[-(GREEN_WINDOW - 1):] + [{"result": today}]
     tally = {}
-    for sym in SYMBOLS:
+    for sym in today:
         vals = [r["result"].get(sym, {}).get("net_bps") for r in rows]
         vals = [v for v in vals if v is not None and v == v]  # drop None/NaN
         green = sum(1 for v in vals if v > 0)
@@ -208,22 +223,34 @@ def main() -> None:
             return f"{'—':>{w}}"
         return f"{x:>{'+' if plus else ''}{w}.{prec}f}"
 
+    # Screen the whole captured universe; show the top movers by net plus the
+    # tracked candidates (so a new single-name edge surfaces on its own, and the
+    # tracked ones are always visible even on an off day). Nan-net (no trades) sinks.
+    def net_key(sym: str) -> float:
+        v = result[sym].get("net_bps")
+        return v if v is not None and v == v else -1e9
+    ranked = sorted(result, key=net_key, reverse=True)
+    show = list(dict.fromkeys(ranked[:DISPLAY_N] + [s for s in TRACKED if s in result]))
+    show.sort(key=net_key, reverse=True)
+
     head = f"{'sym':<5}{'dir':>5}{'Δd':>6}{'net':>6}{'Lnet':>6}{'tr':>5}{'hit':>5}{'g':>6}"
     lines = [head]
-    for sym in SYMBOLS:
+    for sym in show:
         r = result[sym]
         hit = f"{r['hit'] * 100:>4.0f}%" if r['hit'] == r['hit'] else f"{'—':>5}"
+        star = "*" if sym in TRACKED else " "
         lines.append(
-            f"{sym:<5}{cell(r['dir'], 5, 2, plus=False)}{cell(r['d_best'], 6, 2)}"
+            f"{sym:<4}{star}{cell(r['dir'], 5, 2, plus=False)}{cell(r['d_best'], 6, 2)}"
             f"{cell(r['net_bps'], 6, 1)}{cell(r['net_lo'], 6, 1)}"
             f"{r['trades']:>5d}{hit}{tally[sym]:>6}"
         )
     table = "\n".join(lines)
+    greens = sum(1 for s in result if net_key(s) > 0)
     msg = (
-        f"📊 <b>equities OOS · {day}</b>\n"
+        f"📊 <b>equities OOS · {day}</b>  ({greens}/{len(result)} names net+)\n"
         f"{account_line(root)}\n"
         f"ev no-micro · 5s · dz{DEAD_ZONE_BPS:g} · spread&lt;{SPREAD_CAP_BPS:g}bp · fee 0\n"
-        f"candidate NVDA (short-dependent; Lnet=long-only)\n"
+        f"* = tracked candidate (short-dependent; Lnet=long-only). top {len(show)} of {len(result)} by net\n"
         f"<pre>{table}</pre>"
     )
 
