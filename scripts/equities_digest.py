@@ -81,12 +81,46 @@ def account_line(root: Path) -> str:
         return "paper acct n/a"
 
 
+def excluded_days(root: Path) -> set[str]:
+    """Sessions quarantined as data-quality failures — one YYYY-MM-DD per line in
+    logs/excluded_sessions.txt (# comments allowed). A capture that stalled or kept
+    reconnecting produces a gappy DB; scoring it would put a meaningless row into the
+    rolling tally, which is the one thing the tally must never contain."""
+    try:
+        lines = (root / "logs" / "excluded_sessions.txt").read_text().splitlines()
+    except OSError:
+        return set()
+    return {ln.split("#")[0].strip() for ln in lines if ln.split("#")[0].strip()}
+
+
 def latest_db(root: Path, explicit: str | None) -> Path | None:
     if explicit:
         p = root / explicit
         return p if p.exists() else None
-    dbs = sorted(glob.glob(str(root / "data" / "equities_2*.duckdb")))
+    skip = excluded_days(root)
+    dbs = [
+        p for p in sorted(glob.glob(str(root / "data" / "equities_2*.duckdb")))
+        if Path(p).stem.replace("equities_", "") not in skip
+    ]
     return Path(dbs[-1]) if dbs else None
+
+
+def already_recorded(root: Path, day: str) -> bool:
+    """Idempotence: never write a second row for a day under the same config (a
+    re-run would double-count it in the green tally)."""
+    history = root / "logs" / "equities_digest_history.jsonl"
+    try:
+        lines = history.read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("config") == CONFIG_ID and r.get("day") == day:
+            return True
+    return False
 
 
 def db_symbols(db: Path) -> list[str]:
@@ -208,6 +242,9 @@ def main() -> None:
         print("no equities DB found — nothing to report (weekend/holiday/capture failed)")
         return
     day = db.stem.replace("equities_", "")
+    if not args.db and already_recorded(root, day):
+        print(f"{day}: already scored for {CONFIG_ID} — nothing new to report")
+        return
 
     result = asyncio.run(screen(db))
     history = root / "logs" / "equities_digest_history.jsonl"
