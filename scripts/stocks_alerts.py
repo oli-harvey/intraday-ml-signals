@@ -187,11 +187,15 @@ def main() -> None:
         )
         cur["last_beat"] = time.time()
 
-    for m in msgs:
-        if args.no_send:
+    if args.no_send:  # a dry run must NOT consume the transitions it is previewing
+        for m in msgs:
             print(m)
-        else:
-            send(load_env(args.env), m)
+        if not msgs:
+            print(f"{now:%H:%M} {state}: no alerts")
+        return
+
+    for m in msgs:
+        send(load_env(args.env), m)
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(cur))
