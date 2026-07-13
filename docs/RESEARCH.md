@@ -598,3 +598,54 @@ regimes via the running capture; (b) add spread-cap + a `<2bp` gate to the diges
 NVDA config's daily net is tracked in the rolling screen; (c) only after ~10 green sessions
 across regimes, consider short support in the book + a paper-live NVDA dry-run. Do NOT
 deploy on 4 high-vol days.
+
+## 2026-07-13 — PRE-TRADING AUDIT: two defects found and fixed; the finding survives
+
+Sitrep before the first 30-symbol session. Three real problems, all caught before
+they did damage.
+
+**1. The capture would have stalled (fixed, deployed).** `ColdStore.run` did one
+`asyncio.wait_for(queue.get())` PER RECORD — a timer handle per event — capping the
+writer at **4,025 events/s** (measured, on hardware faster than the VPS). Fine for 3
+crypto symbols (~215/s); today's 30-symbol equities capture multiplies the rate, and
+a full queue makes `IngestStage.put()` **block**, stalling the websocket reader until
+Alpaca drops us as a slow consumer. Greedy `get_nowait()` drain → **825,927 events/s
+(205x)**. Recorder queue 50k→250k to absorb the open-bell burst.
+
+**2. The "no-micro" ablation was never micro-free (fixed).** `exclude` was given only
+the BASE micro features; the three micro-derived PRODUCT INTERACTIONS survived — and
+`flow_x_imbalance` is **trade-derived**. So trades still fed the model, and switching
+to a quotes-only capture would have silently changed the config. Canonical
+`MICRO_FEATURES` (base + ratio + product) now lives in `features/engine.py`; all five
+research scripts import it so the list can't drift. **Verified: with a true no-micro
+ablation the engine is EXACTLY trades-invariant — 0 of 394,696 feature vectors differ
+with trades stripped.** Quotes-only is therefore comparable to the historical sessions.
+
+**3. Replay was NON-DETERMINISTIC (fixed).** `ReplaySource` ordered by `recv_ns`
+alone, but one WS frame delivers many quotes sharing a `recv_ns` (**63.8%** of NVDA
+rows tied, up to 75/frame) and DuckDB's parallel sort broke ties differently each
+run. The same DB scored differently every time: **stdev 0.14bps, spread 0.31bps** on
+a ~3bps signal — enough to flip a thin session green/red, and it masqueraded as a
+"trades matter" effect. Now ordered by `(recv_ns, ts_ns, symbol)` — a total order
+that is also semantically correct (arrival batch, then exchange time within it).
+Same DB 3x is byte-identical. **Every number before today carried this noise.**
+
+**The finding SURVIVES both corrections, slightly stronger.** NVDA 5s no-micro dz4
+spread<2bp, re-scored deterministically:
+
+| session | NVDA net | Lnet (long-only) | trades | AAPL net |
+|---|---|---|---|---|
+| 07-07 | +3.78 | +3.83 | 240 | +0.83 |
+| 07-08 | +2.51 | −0.00 | 134 | +3.44 |
+| 07-09 | +3.32 | −0.11 | 138 | +1.62 |
+| 07-10 | +2.76 | −0.31 | 98 | +3.04 |
+
+NVDA **4/4 green, min +2.51** (every session clears a 1bp slippage haircut), still
+**short-dependent** (long-only is ~0/negative on 3 of 4). AAPL also 4/4 but thinner
+(+0.83 min). CONFIG_ID → `nomicro2` so the rolling tally doesn't mix the old leaky,
+non-deterministic rows.
+
+**Status unchanged in substance:** promising, replicated, slippage-robust, but still
+4 sessions of one high-vol week, idealised fills, and short-dependent (needs margin +
+borrow + short support in the book). The audit raises confidence in the *measurement*,
+not the sample size. Do not deploy on 4 sessions.
