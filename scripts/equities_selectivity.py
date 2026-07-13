@@ -20,7 +20,7 @@ import argparse
 import asyncio
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig, MICRO_FEATURES
+from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 DEFAULT = ["SPY", "AAPL", "NVDA"]
 # microstructure family (order-book/flow) vs the momentum/lag/vol family kept.
@@ -43,7 +43,8 @@ def main() -> None:
 
     print(f"\n=== A) SELECTIVITY sweep (ev, {args.horizon_s:g}s, fee=0) ===")
     res = asyncio.run(run(args.db, args.symbols, args.horizon_s))
-    print(f"{'sym':6s} {'dz_bps':>6s} {'trades':>7s} {'net_bps':>8s} {'hit%':>5s} {'total_bps':>10s}")
+    print(f"{'sym':6s} {'dz_bps':>6s} {'trades':>7s} {'net_bps':>8s} {'hit%':>5s} "
+          f"{'total_bps':>10s}")
     print("-" * 50)
     for sym in args.symbols:
         sc = res.symbols[sym]

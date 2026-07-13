@@ -74,13 +74,23 @@ def main() -> None:
     )
     hn = res.horizon_ns
 
-    pred_side = lambda r: (1.0 if r.prediction > 0 else -1.0 if r.prediction < 0 else 0.0)
-    gap_side = lambda r: (1.0 if r.gap_bps > 0 else -1.0 if r.gap_bps < 0 else 0.0)
+    def _sign(x: float) -> float:
+        return 1.0 if x > 0 else -1.0 if x < 0 else 0.0
+
+    def pred_side(r) -> float:
+        return _sign(r.prediction)
+
+    def gap_side(r) -> float:
+        return _sign(r.gap_bps)
+
     # persistence = "last independent window's move repeats"; fade = its mirror.
     # If either matches model_dir on the alts, the direction is autocorrelation,
     # not the gap and not model skill.
-    pers_side = lambda r: (1.0 if r.persistence > 0 else -1.0 if r.persistence < 0 else 0.0)
-    fade_side = lambda r: -pers_side(r)
+    def pers_side(r) -> float:
+        return _sign(r.persistence)
+
+    def fade_side(r) -> float:
+        return -pers_side(r)
 
     print(f"\ndb={args.db}  model={args.model}  horizon={args.horizon_s}s  "
           f"{'overlapping' if args.overlapping else 'NON-overlapping'}")

@@ -187,7 +187,8 @@ def main() -> None:
     print("net bps/trade (fills/signals shown as fill%):\n")
     hdr = (f"{'sym':9s} {'sig':>6s} | {'taker':>8s} | {'mk_in/tk':>8s} {'fill%':>6s} "
            f"| {'mk/mk':>8s} {'fill%':>6s}")
-    print(hdr); print("-" * len(hdr))
+    print(hdr)
+    print("-" * len(hdr))
     agg = {}
     for sym in args.symbols:
         rows = res.symbols[sym].rows

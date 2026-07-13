@@ -30,7 +30,7 @@ import urllib.request
 from pathlib import Path
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig, MICRO_FEATURES
+from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 TRACKED = ["NVDA", "AAPL"]  # always shown + named as candidates (the 07-10 finding)
 DISPLAY_N = 14              # rows in the Telegram table (top movers by net + TRACKED)
@@ -253,7 +253,8 @@ def main() -> None:
         f"📊 <b>equities OOS · {day}</b>  ({greens}/{len(result)} names net+)\n"
         f"{account_line(root)}\n"
         f"ev no-micro · 5s · dz{DEAD_ZONE_BPS:g} · spread&lt;{SPREAD_CAP_BPS:g}bp · fee 0\n"
-        f"* = tracked candidate (short-dependent; Lnet=long-only). top {len(show)} of {len(result)} by net\n"
+        f"* = tracked candidate (short-dependent; Lnet=long-only). "
+        f"top {len(show)} of {len(result)} by net\n"
         f"<pre>{table}</pre>"
     )
 

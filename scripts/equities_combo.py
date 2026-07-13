@@ -16,7 +16,7 @@ import asyncio
 import glob
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig, MICRO_FEATURES
+from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
 HORIZONS = [5.0, 10.0]

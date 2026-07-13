@@ -24,7 +24,7 @@ import glob
 import statistics as stats
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig, MICRO_FEATURES
+from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
 DZS = [2.0, 4.0]
@@ -71,7 +71,6 @@ async def main() -> None:
             cells = []
             for cap in CAPS:
                 vals = acc[(sym, dz, cap)]
-                nets = [v for v, _ in vals]
                 trs = [t for _, t in vals]
                 # count green only among sessions that actually traded (n>0)
                 traded = [v for v, t in vals if t > 0]

@@ -9,6 +9,7 @@ replay) — never in the live loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,10 +179,8 @@ class ColdStore:
                     await asyncio.sleep(0)  # yield so the producer can refill
                 else:  # queue empty — block until the next record or the flush deadline
                     timeout = max(0.0, next_flush - loop.time())
-                    try:
+                    with contextlib.suppress(TimeoutError):  # deadline hit: go flush
                         self.append(await asyncio.wait_for(queue.get(), timeout))
-                    except TimeoutError:
-                        pass
         finally:
             await self.flush()  # never lose the tail on cancellation
 
