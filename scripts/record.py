@@ -26,9 +26,11 @@ async def main_async(args: argparse.Namespace) -> None:
         subscribe_trades=not args.no_trades, url=args.url
     )
     await source.subscribe(args.symbols)
-    # Sized for equities burst rates on a small shared VPS (hit 10k cap there;
-    # events are ~200B so 50k is ~10MB — cheap insurance against WS drops).
-    queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=50_000)
+    # Sized for equities burst rates on a small shared VPS. A full queue makes
+    # IngestStage's put() BLOCK, which stalls the websocket reader and risks being
+    # dropped as a slow consumer — so size for the open-bell burst across 30
+    # symbols, not the average. Events are ~200B, so 250k is ~50MB (box has 4GB).
+    queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=250_000)
     stage = IngestStage(source, queue)
     store = ColdStore(args.db)
 

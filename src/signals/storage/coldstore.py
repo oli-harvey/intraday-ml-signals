@@ -148,20 +148,40 @@ class ColdStore:
     async def run(
         self, queue: asyncio.Queue[LogRecord], flush_interval_s: float = 2.0
     ) -> None:
-        """Drain the tap queue continuously, flushing every flush_interval_s."""
+        """Drain the queue continuously, flushing every flush_interval_s.
+
+        Drains GREEDILY: everything already queued is taken with get_nowait()
+        before we yield. The previous loop did one `asyncio.wait_for(queue.get())`
+        per record, which allocates a timer handle per event and capped the writer
+        at ~4k events/s — fine for 3 crypto symbols (~200/s) but far too slow for a
+        30-symbol equities session, where the producer's blocking `put()` on a full
+        queue would stall the websocket reader and get us dropped as a slow
+        consumer. We only pay for an await when the queue is genuinely empty.
+        """
         loop = asyncio.get_running_loop()
         next_flush = loop.time() + flush_interval_s
         try:
             while True:
-                timeout = max(0.0, next_flush - loop.time())
-                try:
-                    record = await asyncio.wait_for(queue.get(), timeout)
-                    self.append(record)
-                except TimeoutError:
-                    pass
+                drained = 0
+                while True:  # take everything currently queued — no per-event await
+                    try:
+                        self.append(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                    drained += 1
+
                 if loop.time() >= next_flush:
                     await self.flush()
                     next_flush = loop.time() + flush_interval_s
+
+                if drained:
+                    await asyncio.sleep(0)  # yield so the producer can refill
+                else:  # queue empty — block until the next record or the flush deadline
+                    timeout = max(0.0, next_flush - loop.time())
+                    try:
+                        self.append(await asyncio.wait_for(queue.get(), timeout))
+                    except TimeoutError:
+                        pass
         finally:
             await self.flush()  # never lose the tail on cancellation
 
