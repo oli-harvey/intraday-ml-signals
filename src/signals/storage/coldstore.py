@@ -157,7 +157,7 @@ class ColdStore:
         for table, rows in batches.items():
             if not rows:
                 continue
-            columns = list(zip(*rows))
+            columns = list(zip(*rows, strict=True))  # all rows have the table's arity
             batch = {  # noqa: F841 — DuckDB resolves `batch` via replacement scan
                 name: (
                     np.array(col, dtype=object)
