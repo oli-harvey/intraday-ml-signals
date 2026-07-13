@@ -24,10 +24,9 @@ import glob
 import statistics as stats
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig
+from signals.features.engine import FeatureConfig, MICRO_FEATURES
 
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
-MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s", "micro_over_spread"]
 DZS = [2.0, 4.0]
 CAPS: list[float | None] = [None, 2.0, 1.5, 1.0]
 
@@ -42,7 +41,7 @@ async def main() -> None:
     ap.add_argument("--horizon-s", type=float, default=5.0)
     ap.add_argument("--long-only", action="store_true", help="no shorts (margin-acct reality)")
     args = ap.parse_args()
-    cfg = FeatureConfig(exclude=tuple(MICRO))
+    cfg = FeatureConfig(exclude=MICRO_FEATURES)
     hn = int(args.horizon_s * 1e9)
     days = [db.split("equities_")[-1][5:10] for db in args.dbs]
     allow_short = not args.long_only

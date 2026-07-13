@@ -16,6 +16,22 @@ from ..data.schema import MarketEvent, Quote, Side, Tick
 from .cross import CrossFeed
 from .online_stats import EMA, RunningZScore, Welford
 
+# The complete microstructure family — base features AND the products derived from
+# them. `FeatureConfig(exclude=MICRO_FEATURES)` is the "no-micro" ablation; passing
+# only the base names silently LEAKS micro info back in through the interactions
+# (this bit us: flow_x_imbalance is trade-derived, so a quotes-only capture would
+# have changed the model without changing the config). Canonical here so the
+# research scripts can't drift from it.
+#
+# What survives the ablation: ret_k / ema_spread / vol / ret1_over_vol — all
+# computed from quote mids alone, so a no-micro model is invariant to the trades
+# feed (verified: identical results with trades stripped).
+MICRO_FEATURES: tuple[str, ...] = (
+    "spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s",
+    "micro_over_spread",  # ratio interaction (micro_bps / spread_bps)
+    "micro_x_uptick", "micro_x_ret1", "flow_x_imbalance",  # product interactions
+)
+
 
 @dataclass(frozen=True)
 class FeatureConfig:
@@ -172,6 +188,8 @@ class FeatureEngine:
             # centered): the product is positive when the two signals AGREE in
             # sign — confirmation — and negative on disagreement. Re-z-normalized
             # so the model sees a calibrated, clipped input like everything else.
+            # NB: all three are micro-DERIVED — they must be dropped alongside the
+            # base micro features (see MICRO_FEATURES) or the ablation leaks.
             for name, a, b in (
                 ("micro_x_uptick", "micro_bps", "uptick"),  # lean confirmed by tape
                 ("micro_x_ret1", "micro_bps", "ret_1"),  # lean confirmed by last move

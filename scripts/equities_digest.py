@@ -30,19 +30,22 @@ import urllib.request
 from pathlib import Path
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig
+from signals.features.engine import FeatureConfig, MICRO_FEATURES
 
 TRACKED = ["NVDA", "AAPL"]  # always shown + named as candidates (the 07-10 finding)
 DISPLAY_N = 14              # rows in the Telegram table (top movers by net + TRACKED)
 HORIZON_S = 5.0
 DEAD_ZONE_BPS = 4.0  # the flagship config's selectivity bar
 SPREAD_CAP_BPS = 2.0  # spread-conditional entry: only trade when spread < this
-MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s", "micro_over_spread"]
 GREEN_WINDOW = 10  # rolling tally over the last N sessions
 # Config id stamped on every history row; the rolling tally counts ONLY rows with
 # the current id, so changing the config starts a clean tally (no mixing nets from
 # a different rule). The tracked candidate is NVDA (RESEARCH.md 2026-07-10).
-CONFIG_ID = f"ev_nomicro_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}_sc{SPREAD_CAP_BPS:g}"
+# nomicro2 (2026-07-13): the ablation now drops the micro PRODUCT INTERACTIONS too
+# (see MICRO_FEATURES) — the old list leaked trade-derived flow back in via
+# flow_x_imbalance — and replay is deterministic (was tie-unstable, stdev 0.14bps).
+# Both change the numbers, so the pre-07-13 rows are not comparable: new id.
+CONFIG_ID = f"ev_nomicro2_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}_sc{SPREAD_CAP_BPS:g}"
 
 
 def load_env(path: str) -> dict[str, str]:
@@ -106,7 +109,7 @@ async def screen(db: Path) -> dict[str, dict]:
     the short-dependence is visible in the daily number. Screens every captured
     symbol so new single-name reversion edges surface on their own."""
     symbols = db_symbols(db)
-    cfg = FeatureConfig(exclude=tuple(MICRO))
+    cfg = FeatureConfig(exclude=MICRO_FEATURES)
     res = await evaluate(str(db), symbols, model_kind="ev", horizon_s=HORIZON_S,
                          non_overlapping=True, feature_config=cfg)
     hn = int(HORIZON_S * 1e9)

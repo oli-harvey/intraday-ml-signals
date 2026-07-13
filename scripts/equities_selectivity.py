@@ -20,13 +20,11 @@ import argparse
 import asyncio
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig
+from signals.features.engine import FeatureConfig, MICRO_FEATURES
 
 DEFAULT = ["SPY", "AAPL", "NVDA"]
 # microstructure family (order-book/flow) vs the momentum/lag/vol family kept.
 # micro_over_spread is the micro-derived interaction (computed before exclude runs).
-MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s",
-         "micro_over_spread"]
 
 
 async def run(db, symbols, horizon_s, cfg=None):
@@ -57,7 +55,7 @@ def main() -> None:
         print()
 
     print(f"=== B) FEATURE ABLATION (ev, {args.horizon_s:g}s): full vs no-micro ===")
-    cfg = FeatureConfig(exclude=tuple(MICRO))
+    cfg = FeatureConfig(exclude=MICRO_FEATURES)
     res_abl = asyncio.run(run(args.db, args.symbols, args.horizon_s, cfg))
     print(f"{'sym':6s} {'variant':>9s} {'mdir':>6s} {'base':>6s} {'d-best':>7s} "
           f"{'trades':>7s} {'net_bps':>8s}")

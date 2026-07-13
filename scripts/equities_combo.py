@@ -16,12 +16,11 @@ import asyncio
 import glob
 
 from signals.evaluation import evaluate
-from signals.features.engine import FeatureConfig
+from signals.features.engine import FeatureConfig, MICRO_FEATURES
 
 SYMBOLS = ["SPY", "AAPL", "NVDA"]
 HORIZONS = [5.0, 10.0]
 DEAD_ZONES = [0.5, 2, 4, 8]
-MICRO = ["spread_bps", "imbalance", "flow", "micro_bps", "uptick", "dt_s", "micro_over_spread"]
 
 
 async def main() -> None:
@@ -30,7 +29,7 @@ async def main() -> None:
                     default=sorted(glob.glob("data/equities_2026-*.duckdb")))
     args = ap.parse_args()
     DBS = args.dbs
-    cfg = FeatureConfig(exclude=tuple(MICRO))  # no-micro (the ablation winner)
+    cfg = FeatureConfig(exclude=MICRO_FEATURES)  # no-micro (the ablation winner)
     for db in DBS:
         print(f"\n########## {db}  (no-micro, ev) ##########")
         for hz in HORIZONS:

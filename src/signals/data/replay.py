@@ -24,10 +24,18 @@ def _load_events(db_path: str, symbols: Sequence[str] | None) -> Iterator[Market
     if symbols:
         where = f" WHERE symbol IN ({','.join('?' for _ in symbols)})"
         params = list(symbols)
+    # ORDER BY recv_ns ALONE IS NOT A TOTAL ORDER: one websocket frame delivers many
+    # quotes that all share a recv_ns (63.8% of NVDA rows are tied, up to 75 per
+    # frame), and DuckDB's parallel sort breaks those ties differently on each run —
+    # so replay yielded a different event sequence every time and the same DB scored
+    # differently (stdev ~0.14bps, spread ~0.31bps on a ~3bps signal). Tie-break on
+    # (ts_ns, symbol) for a deterministic total order that is also the semantically
+    # correct one: arrival batch first, exchange time within the batch.
+    order = "ORDER BY recv_ns, ts_ns, symbol"
     try:
-        trades = conn.execute(f"SELECT * FROM trades{where} ORDER BY recv_ns", params).fetchall()
-        quotes = conn.execute(f"SELECT * FROM quotes{where} ORDER BY recv_ns", params).fetchall()
-        bars = conn.execute(f"SELECT * FROM bars{where} ORDER BY recv_ns", params).fetchall()
+        trades = conn.execute(f"SELECT * FROM trades{where} {order}", params).fetchall()
+        quotes = conn.execute(f"SELECT * FROM quotes{where} {order}", params).fetchall()
+        bars = conn.execute(f"SELECT * FROM bars{where} {order}", params).fetchall()
     finally:
         conn.close()
 
