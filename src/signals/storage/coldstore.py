@@ -147,31 +147,42 @@ class ColdStore:
         return n
 
     async def run(
-        self, queue: asyncio.Queue[LogRecord], flush_interval_s: float = 2.0
+        self,
+        queue: asyncio.Queue[LogRecord],
+        flush_interval_s: float = 2.0,
+        max_batch: int = 20_000,
     ) -> None:
-        """Drain the queue continuously, flushing every flush_interval_s.
+        """Drain the queue continuously; flush every flush_interval_s OR whenever
+        the buffer reaches max_batch rows, whichever comes first.
 
-        Drains GREEDILY: everything already queued is taken with get_nowait()
-        before we yield. The previous loop did one `asyncio.wait_for(queue.get())`
-        per record, which allocates a timer handle per event and capped the writer
-        at ~4k events/s — fine for 3 crypto symbols (~200/s) but far too slow for a
-        30-symbol equities session, where the producer's blocking `put()` on a full
-        queue would stall the websocket reader and get us dropped as a slow
-        consumer. We only pay for an await when the queue is genuinely empty.
+        Two lessons are baked in here, both learned the hard way:
+
+        1. Drain GREEDILY. The original loop did one `asyncio.wait_for(queue.get())`
+           per record — a timer handle per event — capping the writer at ~4k
+           events/s. Fine for 3 crypto symbols (~200/s), hopeless for a 30-symbol
+           equities open.
+
+        2. But BOUND THE FLUSH. Greedy draining alone just moves the bottleneck to
+           DuckDB: an unbounded buffer let the open-bell burst build one enormous
+           executemany that ran for MINUTES (CPU-bound, commits only at the end).
+           While it ran, nothing drained, the queue hit its cap, the producer's
+           blocking put() stalled the websocket reader, and Alpaca dropped us as a
+           slow consumer — 34 reconnects and a frozen writer on 2026-07-13. Capping
+           the batch keeps every write short, so the loop always comes back to drain.
         """
         loop = asyncio.get_running_loop()
         next_flush = loop.time() + flush_interval_s
         try:
             while True:
                 drained = 0
-                while True:  # take everything currently queued — no per-event await
+                while drained < max_batch:  # bounded: never build a runaway batch
                     try:
                         self.append(queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
                     drained += 1
 
-                if loop.time() >= next_flush:
+                if drained >= max_batch or loop.time() >= next_flush:
                     await self.flush()
                     next_flush = loop.time() + flush_interval_s
 
