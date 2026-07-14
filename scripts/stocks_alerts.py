@@ -76,14 +76,45 @@ def in_session(now: datetime) -> bool:
 
 
 def capture_alive() -> bool:
-    return subprocess.run(
-        ["pgrep", "-f", "record.py --market stocks"],
-        capture_output=True, check=False,
-    ).returncode == 0
+    """stocks_live.py is the current session process; record.py is the older
+    capture-only fallback. Either counts as the session being up."""
+    return any(
+        subprocess.run(["pgrep", "-f", pat], capture_output=True, check=False).returncode == 0
+        for pat in ("stocks_live.py", "record.py --market stocks")
+    )
+
+
+def read_status(root: Path) -> dict | None:
+    """status_stocks.json from stocks_live.py — capture health AND the live shadow
+    book (trades, net bps, per symbol). Preferred source; the log line is the
+    fallback for a plain record.py capture, which has no trading numbers at all."""
+    try:
+        st = json.loads((root / "data" / "status_stocks.json").read_text())
+    except (OSError, ValueError):
+        return None
+    sim = st.get("sim", {})
+    pq = st.get("sim_per_quote", {})
+    return {
+        "pq_trades": int(pq.get("trades", 0)),
+        "pq_avg_bps": float(pq.get("avg_net_bps", float("nan"))),
+        "up_s": int(st.get("uptime_s", 0)),
+        "events": int(st.get("events", 0)),
+        "rows": int(st.get("rows_written", 0)),
+        "q_hwm": int(st.get("q_hwm", 0)),
+        "reconnects": int(st.get("reconnects", 0)),
+        "dropped": int(st.get("dropped", 0)),
+        "trades": int(sim.get("trades", 0)),
+        "net_bps": float(sim.get("net_bps_sum", 0.0)),
+        "avg_bps": float(sim.get("avg_net_bps", float("nan"))),
+        "hit": float(sim.get("hit_rate", float("nan"))),
+        "by_symbol": sim.get("by_symbol", {}),
+        "config": st.get("config", ""),
+        "age_s": time.time() - st.get("ts", 0),
+    }
 
 
 def read_log(root: Path) -> dict | None:
-    """Last progress line from the capture log."""
+    """Fallback: last progress line from a plain record.py capture (no trading)."""
     try:
         lines = (root / "logs" / "equities_cron.log").read_text().splitlines()
     except OSError:
@@ -92,9 +123,38 @@ def read_log(root: Path) -> dict | None:
         m = LOG_LINE.search(line)
         if m:
             up, events, rows, hwm, recon = (int(g) for g in m.groups())
-            return {"up_s": up, "events": events, "rows": rows,
-                    "q_hwm": hwm, "reconnects": recon}
+            return {"up_s": up, "events": events, "rows": rows, "q_hwm": hwm,
+                    "reconnects": recon, "dropped": 0, "trades": 0, "net_bps": 0.0,
+                    "avg_bps": float("nan"), "hit": float("nan"), "by_symbol": {},
+                    "config": "capture-only (no live model)", "age_s": 0.0}
     return None
+
+
+def trading_line(cur: dict) -> str:
+    """How many stocks were traded, and what they made — under BOTH cadences.
+
+    They differ by ~3x of the edge (RESEARCH.md 2026-07-14), so reporting only one
+    would quietly mean the wrong thing:
+      windowed  — one look per 5s window; the cadence every research headline used
+      per-quote — act on every signal; what a naive live implementation earns
+    """
+    n = cur.get("trades", 0)
+    pq_n = cur.get("pq_trades", 0)
+    if not n and not pq_n:
+        return "trades 0 — no signal has cleared the spread gate yet"
+    top = sorted(cur.get("by_symbol", {}).items(),
+                 key=lambda kv: -kv[1].get("trades", 0))[:4]
+    names = " · ".join(f"{s} {d['trades']}@{d['avg_net_bps']:+.1f}" for s, d in top)
+    hit = cur.get("hit", float("nan"))
+    hit_s = f"{hit * 100:.0f}%" if hit == hit else "—"
+    pq_avg = cur.get("pq_avg_bps", float("nan"))
+    pq_s = f"{pq_avg:+.2f}" if pq_avg == pq_avg else "—"
+    return (
+        f"<b>{n} trades</b> (windowed) · net {cur['net_bps']:+.0f}bps "
+        f"(avg {cur['avg_bps']:+.2f}) · hit {hit_s}\n"
+        f"{names}\n"
+        f"per-quote: {pq_n} trades · avg {pq_s}bps ← the honest live rule"
+    )
 
 
 def db_size_mb(root: Path) -> float:
@@ -108,12 +168,17 @@ def detect(prev: dict, cur: dict) -> list[str]:
     was, now = prev.get("state"), cur["state"]
 
     if now == "open" and was in (None, "closed"):
-        out.append("📈 <b>stocks session open</b> — capture up, 30 symbols streaming")
+        out.append(
+            f"📈 <b>stocks session open</b> — 30 symbols streaming\n"
+            f"shadow book: {cur.get('config', '')} (no real orders)"
+        )
     elif now == "closed" and was in ("open", "down", "stalled"):
         out.append(
             f"🏁 <b>stocks session close</b>\n"
-            f"events {cur['events']:,} · rows {cur['rows']:,} · "
-            f"unwritten {max(0, cur['events'] - cur['rows']):,}\n"
+            f"{trading_line(cur)}\n"
+            f"—\ncapture: events {cur['events']:,} · rows {cur['rows']:,} · "
+            f"unwritten {max(0, cur['events'] - cur['rows']):,} · "
+            f"dropped {cur.get('dropped', 0):,}\n"
             f"reconnects {cur['reconnects']} · peak queue {cur['q_hwm']:,}/{QUEUE_CAP:,} · "
             f"db {cur['db_mb']:.0f}MB"
         )
@@ -153,7 +218,12 @@ def main() -> None:
     root = Path(args.root)
 
     now = datetime.now(tz=NY)
-    log = read_log(root) or {"up_s": 0, "events": 0, "rows": 0, "q_hwm": 0, "reconnects": 0}
+    # status_stocks.json (has the shadow book) beats the bare capture log
+    log = read_status(root) or read_log(root) or {
+        "up_s": 0, "events": 0, "rows": 0, "q_hwm": 0, "reconnects": 0, "dropped": 0,
+        "trades": 0, "net_bps": 0.0, "avg_bps": float("nan"), "hit": float("nan"),
+        "by_symbol": {}, "config": "", "age_s": 0.0,
+    }
     alive = capture_alive()
 
     state_path = root / "logs" / "stocks_alert_state.json"
@@ -176,14 +246,13 @@ def main() -> None:
 
     msgs = detect(prev, cur)
 
-    # heartbeat so silence is informative, not ambiguous
+    # heartbeat so silence is informative, not ambiguous — leads with the trading
     if state == "open" and time.time() - prev.get("last_beat", 0) > HEARTBEAT_MIN * 60:
         secs = max(1, log["up_s"])
         msgs.append(
-            f"💓 stocks capture healthy — {log['events']:,} events "
-            f"({log['events'] / secs:,.0f}/s) · rows {log['rows']:,} · "
-            f"queue {log['q_hwm']:,} · reconnects {log['reconnects']} · "
-            f"db {cur['db_mb']:.0f}MB"
+            f"💓 <b>stocks live</b>\n{trading_line(cur)}\n"
+            f"—\ncapture ok: {log['events']:,} events ({log['events'] / secs:,.0f}/s) · "
+            f"queue {log['q_hwm']:,} · reconnects {log['reconnects']}"
         )
         cur["last_beat"] = time.time()
 

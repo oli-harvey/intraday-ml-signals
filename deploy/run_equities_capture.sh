@@ -42,5 +42,10 @@ ls -1t data/equities_2*.duckdb 2>/dev/null | tail -n +31 | xargs -r rm -f
 [ "$wait_s" -gt 0 ] && sleep "$wait_s"
 # Recompute duration after the wait so a slow start can't overrun the close.
 dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wait — skip"; exit 0; }
-exec .venv/bin/python scripts/record.py --market stocks --no-trades \
-  --symbols $SYMBOLS --duration "$dur" --db "$db"
+# stocks_live.py = record.py's capture (identical quotes -> identical DuckDB) PLUS the
+# tracked model running live on the same websocket, booking a shadow trading book. It
+# places NO orders. That is what lets the Telegram bot report trades during the
+# session instead of only after the nightly replay.
+exec .venv/bin/python scripts/stocks_live.py \
+  --symbols $SYMBOLS --duration "$dur" --db "$db" \
+  --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2

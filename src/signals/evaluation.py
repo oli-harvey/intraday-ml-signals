@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import simrule
 from .core import SymbolPipeline
 from .data.replay import ReplaySource
 from .features.cross import CrossFeed
@@ -104,19 +105,18 @@ class SymbolScore:
         for r in self.rows:
             if r.ts_ns < busy_until:
                 continue  # position still open from a previous signal
-            if max_spread_bps is not None and r.spread_bps > max_spread_bps:
-                continue  # spread too wide — don't pay this toll
-            threshold = (fee_bps + 0.5 * r.spread_bps + dead_zone_bps) / 1e4
-            if r.prediction > threshold:
-                direction = 1.0
-            elif r.prediction < -threshold and allow_short:
-                direction = -1.0
-            else:
+            # simrule is shared verbatim with the LIVE shadow sim — no train/serve skew
+            direction = simrule.decide(
+                r.prediction, r.spread_bps, fee_bps=fee_bps,
+                dead_zone_bps=dead_zone_bps, allow_short=allow_short,
+                max_spread_bps=max_spread_bps,
+            )
+            if direction == 0.0:
                 continue
-            net_bps = direction * r.realized * 1e4 - (r.spread_bps + 2 * fee_bps)
+            pnl = simrule.net_bps(direction, r.realized, r.spread_bps, fee_bps)
             sim.trades += 1
-            sim.wins += 1 if net_bps > 0 else 0
-            sim.net_bps_sum += net_bps
+            sim.wins += 1 if pnl > 0 else 0
+            sim.net_bps_sum += pnl
             busy_until = r.ts_ns + horizon_ns
         return sim
 

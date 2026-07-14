@@ -14,15 +14,47 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from stocks_alerts import QUEUE_CAP, detect, in_session  # noqa: E402
+from stocks_alerts import QUEUE_CAP, detect, in_session, trading_line  # noqa: E402
 
 NY = ZoneInfo("America/New_York")
 
 
 def _state(**kw):
     base = {"state": "open", "events": 1000, "rows": 990, "q_hwm": 50,
-            "reconnects": 0, "db_mb": 10.0}
+            "reconnects": 0, "db_mb": 10.0, "dropped": 0, "trades": 0,
+            "net_bps": 0.0, "avg_bps": float("nan"), "hit": float("nan"),
+            "by_symbol": {}, "config": "ev no-micro 5s dz4 spread<2bp"}
     return {**base, **kw}
+
+
+def _traded(**kw):
+    return _state(
+        trades=34, net_bps=98.6, avg_bps=2.9, hit=0.62,
+        by_symbol={
+            "NVDA": {"trades": 21, "net_bps": 65.1, "avg_net_bps": 3.1, "hit_rate": 0.62},
+            "AAPL": {"trades": 13, "net_bps": 33.5, "avg_net_bps": 2.2, "hit_rate": 0.61},
+        },
+        **kw,
+    )
+
+
+def test_trading_line_reports_how_many_stocks_were_traded():
+    line = trading_line(_traded())
+    assert "34 trades" in line
+    assert "+99bps" in line or "+98bps" in line  # net for the session
+    assert "hit 62%" in line
+    assert "NVDA 21@+3.1" in line and "AAPL 13@+2.2" in line
+
+
+def test_trading_line_is_explicit_when_nothing_traded():
+    assert "trades 0" in trading_line(_state())
+
+
+def test_close_summary_leads_with_the_trading_result():
+    msgs = detect(_traded(), _traded(state="closed"))
+    assert len(msgs) == 1
+    assert "session close" in msgs[0]
+    assert "34 trades" in msgs[0]  # the number the user actually asked for
 
 
 def test_session_open_announced_once():

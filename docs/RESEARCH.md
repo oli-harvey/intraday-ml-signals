@@ -649,3 +649,42 @@ non-deterministic rows.
 4 sessions of one high-vol week, idealised fills, and short-dependent (needs margin +
 borrow + short support in the book). The audit raises confidence in the *measurement*,
 not the sample size. Do not deploy on 4 sessions.
+
+## 2026-07-14 — CADENCE: the headline +3.3bps is ~3x inflated by non-overlapping scoring
+
+Built a live shadow book (`scripts/stocks_live.py` + `signals/livesim.py`) so the bot
+can report trades DURING the session. Validating it against the nightly digest exposed
+a serious measurement error in every equities headline so far.
+
+`evaluate(non_overlapping=True)` exists to score DIRECTION on independent windows —
+correct, and long-standing hygiene. But the digest also runs `simulate_trading` on
+those same subsampled rows, which silently makes the BACKTEST take **one entry per 5s
+window**. A live strategy sees every quote and enters on the first signal that clears
+the bar. Those are different strategies, and the difference is most of the edge:
+
+| NVDA, 07-09 (dz4, spread<2bp) | trades | avg net |
+|---|---|---|
+| windowed (one look per 5s — what every headline reported) | 138 | **+3.320** |
+| per-quote (act on every signal — the naive live rule) | 1,435 | **+1.089** |
+
+Same model, same rule, same data. The gap is **entry-timing selection bias**: acting on
+every quote means entering at the first threshold UPCROSSING, which systematically buys
+noise spikes. The windowed cadence never sees those.
+
+**Why this is decisive:** the 1bp slippage haircut was the bar the finding had to clear.
++3.32 clears it (+2.32). **+1.09 does not (+0.09 ≈ zero).** So whether the NVDA result is
+an edge at all depends entirely on a cadence choice that was never stated — it was an
+artifact of a scoring flag, not a designed strategy.
+
+**Not necessarily fatal**, but it must be earned rather than assumed: "sample the signal
+once per horizon and act on that reading" IS a legitimate, implementable rule, and it is
+the one the +3.3bps describes. What is NOT established is that it survives a different
+sampling phase — the windowed grid here is set by resolution timing, not a clean clock.
+**Next: sweep the sampling phase/grid. If +3.3 is stable across phases it is a real rule;
+if it swings, it is a lucky grid and the honest number is the per-quote +1.09.**
+
+Both books now run live and BOTH are reported (status_stocks.json, Telegram), so the
+number can never quietly mean the wrong thing again. The live windowed book reproduces
+the digest exactly (NVDA 138 @ +3.3201) — verified by replaying the live code path over
+a recorded session. Also fixed while validating: stocks_live dropped events on a full
+queue (silent data loss) — restored the blocking put; 2.74M rows, 0 dropped.
