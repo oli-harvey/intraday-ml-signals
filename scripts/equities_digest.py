@@ -27,9 +27,10 @@ import json
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
-from signals.evaluation import evaluate
+from signals.evaluation import SymbolScore, evaluate
 from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 TRACKED = ["NVDA", "AAPL"]  # always shown + named as candidates (the 07-10 finding)
@@ -38,6 +39,7 @@ HORIZON_S = 5.0
 DEAD_ZONE_BPS = 4.0  # the flagship config's selectivity bar
 SPREAD_CAP_BPS = 2.0  # spread-conditional entry: only trade when spread < this
 GREEN_WINDOW = 10  # rolling tally over the last N sessions
+PHASES = 10  # sampling-phase offsets averaged over (the lucky-grid guard)
 # Config id stamped on every history row; the rolling tally counts ONLY rows with
 # the current id, so changing the config starts a clean tally (no mixing nets from
 # a different rule). The tracked candidate is NVDA (RESEARCH.md 2026-07-10).
@@ -45,7 +47,8 @@ GREEN_WINDOW = 10  # rolling tally over the last N sessions
 # (see MICRO_FEATURES) — the old list leaked trade-derived flow back in via
 # flow_x_imbalance — and replay is deterministic (was tie-unstable, stdev 0.14bps).
 # Both change the numbers, so the pre-07-13 rows are not comparable: new id.
-CONFIG_ID = f"ev_nomicro2_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}_sc{SPREAD_CAP_BPS:g}"
+CONFIG_ID = (f"ev_nomicro3_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}"
+             f"_sc{SPREAD_CAP_BPS:g}_phasemean{PHASES}")
 
 
 def load_env(path: str) -> dict[str, str]:
@@ -135,34 +138,92 @@ def db_symbols(db: Path) -> list[str]:
     return sorted(s for (s,) in rows if ":" not in s)
 
 
+def _non_overlapping(rows, horizon_ns: int):
+    """Rows spaced >= horizon apart — correct for SCORING direction (independent
+    outcomes). NOT used for the trade sim: doing so silently subsamples entries to one
+    per window, which is worth ~3x of the apparent edge (RESEARCH.md 2026-07-14).
+
+    The persistence baseline MUST be recomputed within the subsequence: these rows come
+    from the all-rows stream, where `persistence` is the immediately-preceding
+    (overlapping, ~99%-shared-window) outcome. Scoring against that baseline compares
+    the model to near-autocorrelation and makes d-best meaninglessly negative.
+    """
+    kept, last, prev_realized = [], -(10**18), 0.0
+    for r in rows:
+        if r.ts_ns >= last + horizon_ns:
+            kept.append(replace(r, persistence=prev_realized))
+            last = r.ts_ns
+            prev_realized = r.realized
+    return kept
+
+
+def _on_grid(rows, horizon_ns: int, phase_ns: int):
+    """First row in each absolute time bucket — a live 'sample every horizon' rule."""
+    kept, last_bucket = [], None
+    for r in rows:
+        bucket = (r.ts_ns + phase_ns) // horizon_ns
+        if bucket != last_bucket:
+            kept.append(r)
+            last_bucket = bucket
+    return kept
+
+
 async def screen(db: Path) -> dict[str, dict]:
-    """Per-symbol day result at the candidate config: no-micro EV @ 5s, dz4,
-    spread-conditional entry (only trade when the quoted spread < SPREAD_CAP_BPS)
-    — the 4/4-green, slippage-robust NVDA config (RESEARCH.md 2026-07-10). net is
-    long+short (the edge is short-dependent); net_lo is the long-only version so
-    the short-dependence is visible in the daily number. Screens every captured
-    symbol so new single-name reversion edges surface on their own."""
+    """Per-symbol day result at the candidate config (no-micro EV @ 5s, dz4,
+    spread-conditional entry < SPREAD_CAP_BPS).
+
+    Reports the trade sim under BOTH cadences, because reporting one silently means
+    the wrong thing (RESEARCH.md 2026-07-14):
+
+      net_bps  — PHASE-MEAN of the windowed rule ("sample once per 5s, act on that
+                 reading"), averaged over PHASES absolute-clock offsets. The single
+                 grid the old digest happened to use was a lucky draw: the phase
+                 spread within one session (~5bps) exceeds the effect (~3bps).
+      net_pq   — per-quote: act on every signal. Lower, because entering on the first
+                 threshold upcrossing buys noise spikes.
+
+    Direction metrics still use non-overlapping rows (independent outcomes) — that is
+    what non_overlapping is FOR. The trade sim never does.
+    """
     symbols = db_symbols(db)
     cfg = FeatureConfig(exclude=MICRO_FEATURES)
     res = await evaluate(str(db), symbols, model_kind="ev", horizon_s=HORIZON_S,
-                         non_overlapping=True, feature_config=cfg)
+                         non_overlapping=False, feature_config=cfg)  # ALL rows
     hn = int(HORIZON_S * 1e9)
+    phases = [int(i * hn / PHASES) for i in range(PHASES)]
     out = {}
     for sym in symbols:
-        sc = res.symbols[sym]
-        seg = sc.overall()
-        sim = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
-                                  max_spread_bps=SPREAD_CAP_BPS)
-        lo = sc.simulate_trading(hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
-                                 max_spread_bps=SPREAD_CAP_BPS, allow_short=False)
+        rows = res.symbols[sym].rows
+
+        # direction: score on independent windows
+        seg = SymbolScore(sym, _non_overlapping(rows, hn)).overall()
+
+        def _sim(rs, allow_short=True):
+            return SymbolScore(sym, rs).simulate_trading(  # noqa: B023
+                hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
+                max_spread_bps=SPREAD_CAP_BPS, allow_short=allow_short,
+            )
+
+        grids = [_sim(_on_grid(rows, hn, p)) for p in phases]
+        nets = [g.avg_net_bps for g in grids if g.trades]
+        lo_nets = [
+            _sim(_on_grid(rows, hn, p), allow_short=False).avg_net_bps for p in phases
+        ]
+        lo_nets = [v for v in lo_nets if v == v]
+        pq = _sim(rows)
+
+        nan = float("nan")
         out[sym] = {
             "dir": seg.dir_acc,
             "base": seg.dir_best_baseline,
             "d_best": seg.dir_acc - seg.dir_best_baseline,
-            "net_bps": sim.avg_net_bps,
-            "net_lo": lo.avg_net_bps,
-            "trades": sim.trades,
-            "hit": sim.hit_rate,
+            "net_bps": (sum(nets) / len(nets)) if nets else nan,          # phase-mean
+            "net_spread": (max(nets) - min(nets)) if nets else nan,       # phase fragility
+            "net_lo": (sum(lo_nets) / len(lo_nets)) if lo_nets else nan,
+            "net_pq": pq.avg_net_bps,
+            "trades": int(sum(g.trades for g in grids) / max(1, len(grids))),
+            "trades_pq": pq.trades,
+            "hit": (sum(g.hit_rate for g in grids if g.trades) / len(nets)) if nets else nan,
         }
     return out
 
@@ -273,16 +334,17 @@ def main() -> None:
     show = list(dict.fromkeys(ranked[:DISPLAY_N] + [s for s in TRACKED if s in result]))
     show.sort(key=net_key, reverse=True)
 
-    head = f"{'sym':<5}{'dir':>5}{'Δd':>6}{'net':>6}{'Lnet':>6}{'tr':>5}{'hit':>5}{'g':>6}"
+    head = (f"{'sym':<5}{'dir':>5}{'Δd':>6}{'net':>6}{'±ph':>5}"
+        f"{'pq':>6}{'Lnet':>6}{'tr':>5}{'g':>6}")
     lines = [head]
     for sym in show:
         r = result[sym]
-        hit = f"{r['hit'] * 100:>4.0f}%" if r['hit'] == r['hit'] else f"{'—':>5}"
         star = "*" if sym in TRACKED else " "
         lines.append(
             f"{sym:<4}{star}{cell(r['dir'], 5, 2, plus=False)}{cell(r['d_best'], 6, 2)}"
-            f"{cell(r['net_bps'], 6, 1)}{cell(r['net_lo'], 6, 1)}"
-            f"{r['trades']:>5d}{hit}{tally[sym]:>6}"
+            f"{cell(r['net_bps'], 6, 1)}{cell(r.get('net_spread', float('nan')), 5, 1, plus=False)}"
+            f"{cell(r.get('net_pq', float('nan')), 6, 1)}{cell(r['net_lo'], 6, 1)}"
+            f"{r['trades']:>5d}{tally[sym]:>6}"
         )
     table = "\n".join(lines)
     greens = sum(1 for s in result if net_key(s) > 0)
@@ -290,8 +352,9 @@ def main() -> None:
         f"📊 <b>equities OOS · {day}</b>  ({greens}/{len(result)} names net+)\n"
         f"{account_line(root)}\n"
         f"ev no-micro · 5s · dz{DEAD_ZONE_BPS:g} · spread&lt;{SPREAD_CAP_BPS:g}bp · fee 0\n"
-        f"* = tracked candidate (short-dependent; Lnet=long-only). "
-        f"top {len(show)} of {len(result)} by net\n"
+        f"net=phase-mean · ±ph=spread across phases (fragility) · pq=per-quote · "
+        f"Lnet=long-only\n"
+        f"* = tracked. top {len(show)} of {len(result)} by net\n"
         f"<pre>{table}</pre>"
     )
 
