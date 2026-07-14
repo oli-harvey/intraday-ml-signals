@@ -688,3 +688,46 @@ number can never quietly mean the wrong thing again. The live windowed book repr
 the digest exactly (NVDA 138 @ +3.3201) — verified by replaying the live code path over
 a recorded session. Also fixed while validating: stocks_live dropped events on a full
 queue (silent data loss) — restored the blocking put; 2.74M rows, 0 dropped.
+
+## 2026-07-14 (cont.) — PHASE SWEEP: the windowed edge is a lucky grid. Headline retracted.
+
+Tested whether the windowed rule ("sample the signal once per 5s and act on that
+reading") is real or an artifact of the particular grid the scorer happened to land on.
+Replaced the data-driven grid with an ABSOLUTE clock grid — the rule you would actually
+implement — and swept the phase offset across the whole window
+(`scripts/cadence_sweep.py`, 10 phases × 4 clean sessions).
+
+**NVDA, windowed, net bps/trade by sampling phase:**
+
+| session | phase-mean | sd | range | phases ≤0 | phases failing the 1bp haircut |
+|---|---|---|---|---|---|
+| 07-07 | +3.17 | 1.24 | +0.93 … +5.58 | 0/10 | 1/10 |
+| 07-08 | +4.05 | 1.71 | +0.83 … +6.46 | 0/10 | 1/10 |
+| 07-09 | +1.92 | 1.31 | −1.12 … +3.77 | 1/10 | 1/10 |
+| 07-10 | **+0.36** | 1.24 | −1.78 … +2.68 | **5/10** | 6/10 |
+
+**Verdict: the +3.3bps headline was a lucky grid.** The phase spread WITHIN one session
+(4.5–5.6bps) exceeds the effect (~3bps). The celebrated "+3.32 on 07-09" is one phase of
+a distribution whose mean is +1.92 and whose worst phase is −1.12. On 07-10 half the
+phases lose money. A genuine microstructure edge cannot depend on which half-second you
+sample at; this one does.
+
+**What survives, honestly:** a residual positive tilt. Windowed still beats per-quote on
+average (phase-means +3.17/+4.05/+1.92/+0.36, avg ≈ +2.4, vs per-quote +0.41/+3.02/
++1.09/+0.03, avg ≈ +1.1) — so avoiding the first-upcrossing entry bias is a REAL effect,
+just a much smaller one than advertised. But per-session it swings from +0.36 to +4.05,
+and after a 1bp slippage haircut two of four sessions are at or below zero.
+
+**So: NVDA spread-gated 5s reversion is NOT a deployable edge.** The chain of claims —
+"4/4 green, survives a 1bp haircut, +2.5..+3.8bps" — rested on a single arbitrary
+sampling grid. It is retracted. What is left is a weak, phase-sensitive tilt of ~+1-2bps
+that is not reliably above slippage — i.e. the same wall as every other result in this
+project: real short-horizon structure, no net-of-cost edge.
+
+**Consequences:**
+- The nightly digest currently reports the single lucky grid. That number is misleading
+  and must be replaced by the phase-MEAN (the expectation of the implementable rule) plus
+  the per-quote figure. Until then, treat the tally's green count as unearned.
+- The methodological bug is general: `non_overlapping=True` is right for SCORING
+  direction and wrong for SIMULATING trading. Any future config must be phase-swept
+  before it is believed.
