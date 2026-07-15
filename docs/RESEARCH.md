@@ -731,3 +731,38 @@ project: real short-horizon structure, no net-of-cost edge.
 - The methodological bug is general: `non_overlapping=True` is right for SCORING
   direction and wrong for SIMULATING trading. Any future config must be phase-swept
   before it is believed.
+
+## 2026-07-15 — HORIZON sweep: longer holds are WORSE. The last lever is refuted.
+
+The one principled lever left: the spread toll is fixed (~1-2bp) but a move grows ~sqrt(t),
+so a longer hold might clear it. Tested properly — phase-swept, corrected ablation,
+deterministic replay (`scripts/horizon_sweep.py`, 6 phases, 2 sessions 07-08/07-10):
+
+| sym | horizon | net (phase-mean) | ±phase | net/±ph | d-best | sessions>0 |
+|-----|---------|------------------|--------|---------|--------|-----------|
+| NVDA | 5s | +2.35 | 3.05 | 0.77 | 0.055 | 2/2 |
+| NVDA | 30s | +0.21 | 6.84 | 0.03 | 0.031 | 1/2 |
+| NVDA | 60s | +0.49 | 6.19 | 0.08 | 0.022 | 1/2 |
+| AAPL | 5s | +2.94 | 1.90 | **1.55** | 0.034 | 2/2 |
+| AAPL | 30s | +0.32 | 3.95 | 0.08 | 0.040 | 2/2 |
+| AAPL | 60s | −0.83 | 4.16 | −0.20 | −0.003 | 0/2 |
+
+**Refuted.** The bigger move at longer horizons is beaten by TWO effects: (1) the direction
+edge DECAYS with horizon (reversion fades — d-best falls monotonically), and (2) phase
+fragility GROWS (fewer trades -> noisier; ±phase doubles from 5s to 30s). Net collapses to
+~0 by 30s. 5s is the optimal horizon, which is the reversion story restated.
+
+**The one bright spot:** AAPL @ 5s is the FIRST config in the project with net/±ph > 1
+(effect > its own phase fragility: +2.94 vs ±1.90) AND positive on both sessions. NVDA
+never clears that bar (ratio 0.77 — its net IS smaller than its phase swing). On the full
+4-session phase sweep AAPL was +0.99/+3.12/+1.36/+2.74 (positive all 4, still swinging).
+So if anything here is worth tracking it is AAPL @ 5s, not NVDA — a reversal of the
+original headline. Still marginal (~+2bps, handful of sessions), not deployable.
+
+**State of the project, honestly:** every lever is now exhausted — execution/maker (closed),
+cheaper venue via equities (real direction, sub-toll net), spread-conditional entry (lucky
+grid, retracted), horizon (refuted). What remains is consistent and small: real short-horizon
+reversion DIRECTION on liquid single-name tech (d-best +0.03..+0.06, replicated), whose
+net-of-cost value is marginal and phase-fragile. No durable edge has been demonstrated. The
+honest posture is: keep the phase-swept rolling screen running (it now can't be fooled by a
+grid), watch AAPL @ 5s across more sessions, and expect the wall to hold.

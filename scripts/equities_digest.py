@@ -191,6 +191,7 @@ async def screen(db: Path) -> dict[str, dict]:
                          non_overlapping=False, feature_config=cfg)  # ALL rows
     hn = int(HORIZON_S * 1e9)
     phases = [int(i * hn / PHASES) for i in range(PHASES)]
+    nan = float("nan")
     out = {}
     for sym in symbols:
         rows = res.symbols[sym].rows
@@ -204,24 +205,37 @@ async def screen(db: Path) -> dict[str, dict]:
                 max_spread_bps=SPREAD_CAP_BPS, allow_short=allow_short,
             )
 
-        grids = [_sim(_on_grid(rows, hn, p)) for p in phases]
-        nets = [g.avg_net_bps for g in grids if g.trades]
-        lo_nets = [
-            _sim(_on_grid(rows, hn, p), allow_short=False).avg_net_bps for p in phases
-        ]
-        lo_nets = [v for v in lo_nets if v == v]
         pq = _sim(rows)
+        # The full 10-phase sweep (x2 for long-only) over ~1M rows is ~20 passes/symbol
+        # — fine for 3 tracked names, far too slow nightly across 30. Phase-sweep only
+        # the TRACKED candidates; for the rest, one grid + per-quote is enough to flag a
+        # surprise (and per-quote is the conservative honest number anyway).
+        if sym in TRACKED:
+            grids = [_sim(_on_grid(rows, hn, p)) for p in phases]
+            nets = [g.avg_net_bps for g in grids if g.trades]
+            lo_nets = [
+                v for p in phases
+                if (v := _sim(_on_grid(rows, hn, p), allow_short=False).avg_net_bps) == v
+            ]
+            net_bps = (sum(nets) / len(nets)) if nets else nan
+            net_spread = (max(nets) - min(nets)) if nets else nan
+            net_lo = (sum(lo_nets) / len(lo_nets)) if lo_nets else nan
+            trades = int(sum(g.trades for g in grids) / max(1, len(grids)))
+        else:
+            g0 = _sim(_on_grid(rows, hn, 0))
+            net_bps, net_spread = g0.avg_net_bps, nan
+            net_lo = _sim(_on_grid(rows, hn, 0), allow_short=False).avg_net_bps
+            trades = g0.trades
 
-        nan = float("nan")
         out[sym] = {
             "dir": seg.dir_acc,
             "base": seg.dir_best_baseline,
             "d_best": seg.dir_acc - seg.dir_best_baseline,
-            "net_bps": (sum(nets) / len(nets)) if nets else nan,          # phase-mean
-            "net_spread": (max(nets) - min(nets)) if nets else nan,       # phase fragility
-            "net_lo": (sum(lo_nets) / len(lo_nets)) if lo_nets else nan,
+            "net_bps": net_bps,          # phase-mean (tracked) / single grid (others)
+            "net_spread": net_spread,    # phase fragility (tracked only)
+            "net_lo": net_lo,
             "net_pq": pq.avg_net_bps,
-            "trades": int(sum(g.trades for g in grids) / max(1, len(grids))),
+            "trades": trades,
             "trades_pq": pq.trades,
             "hit": (sum(g.hit_rate for g in grids if g.trades) / len(nets)) if nets else nan,
         }
