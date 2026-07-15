@@ -766,3 +766,34 @@ reversion DIRECTION on liquid single-name tech (d-best +0.03..+0.06, replicated)
 net-of-cost value is marginal and phase-fragile. No durable edge has been demonstrated. The
 honest posture is: keep the phase-swept rolling screen running (it now can't be fooled by a
 grid), watch AAPL @ 5s across more sessions, and expect the wall to hold.
+
+### 2026-07-15 (correction) — the AAPL "bright spot" was a 2-session artifact
+
+The full 4-session horizon sweep (8 phases; the heavy run I'd assumed was killed actually
+finished) walks back the AAPL claim above. On all four sessions:
+
+| sym | horizon | net (phase-mean) | ±phase | net/±ph | d-best | sessions>0 |
+|-----|---------|------------------|--------|---------|--------|-----------|
+| NVDA | 5s | +2.44 | 4.52 | 0.54 | 0.055 | 4/4 |
+| NVDA | 15s | +0.29 | 3.71 | 0.08 | 0.043 | 2/4 |
+| NVDA | 30s | +0.38 | 5.12 | 0.07 | 0.061 | 2/4 |
+| NVDA | 60s | +0.11 | 11.17 | 0.01 | 0.046 | 3/4 |
+| AAPL | 5s | +2.36 | 2.59 | **0.91** | 0.029 | 4/4 |
+| AAPL | 15s | +0.52 | 3.57 | 0.15 | 0.002 | 2/4 |
+| AAPL | 30s | −0.20 | 5.32 | −0.04 | 0.003 | 1/4 |
+| AAPL | 60s | −1.20 | 6.13 | −0.20 | −0.021 | 0/4 |
+
+**AAPL @ 5s is 0.91 on 4 sessions, NOT 1.55.** The lean 2-session run (07-08/07-10) landed
+on AAPL's two best days — my own small-sample over-claim, the very thing this project keeps
+tripping on. Corrected: **NO config clears net/±ph > 1.** Both single names have a phase-
+mean that is reliably positive at 5s (+2.4bps, 4/4 sessions) but a phase spread that EXCEEDS
+that mean (0.54 / 0.91), so any single day-or-phase is roughly a coin-flip around a small
+positive. Horizon conclusion is otherwise unchanged and now confirmed on 4 sessions: 5s
+optimal, longer strictly worse.
+
+**Final honest bottom line:** a weak, real, positive TILT (~+2bps phase-mean, direction
+d-best +0.03..+0.06, both replicated 4/4) that is not robust to sampling phase and not
+reliably above slippage. Real short-horizon structure; no deployable net-of-cost edge. The
+wall holds. Methodology (phase-mean + fragility, deterministic, corrected ablation) is the
+durable deliverable — it makes the next over-claim impossible to ship silently, including,
+belatedly, this one.
