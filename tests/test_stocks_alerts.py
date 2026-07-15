@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from stocks_alerts import QUEUE_CAP, detect, in_session, trading_line  # noqa: E402
+from stocks_alerts import (  # noqa: E402
+    LOG_LINE,
+    QUEUE_CAP,
+    detect,
+    in_session,
+    shadow_descriptor,
+    trading_line,
+)
 
 NY = ZoneInfo("America/New_York")
 
@@ -104,6 +111,35 @@ def test_close_summary_reports_unwritten_rows():
                                    reconnects=34, q_hwm=QUEUE_CAP))
     assert len(msgs) == 1 and "session close" in msgs[0]
     assert "400,000" in msgs[0]  # unwritten = events - rows, surfaced honestly
+
+
+def test_log_line_matches_both_capture_processes():
+    """read_log must parse BOTH formats. The old regex only matched record.py's
+    `rows_written=`; stocks_live.py prints `rows=`, so a transient status miss fell
+    back to a STALE record.py line and mislabelled the session 'capture-only'."""
+    live = ("[+  2821s] events=4617167 rows=4614559 q_hwm=1674 reconnects=0 dropped=0 "
+            "| windowed: trades=51 avg=+2.81bps | per-quote: trades=1619 avg=+4.37bps")
+    rec = "[+   30s] events=16814 rows_written=10931 q_hwm=4175 reconnects=0"
+    for line, want_rows in ((live, 4614559), (rec, 10931)):
+        m = LOG_LINE.search(line)
+        assert m is not None, line
+        assert int(m.group(3)) == want_rows
+
+
+def test_shadow_descriptor_never_says_capture_only_while_live_model_runs():
+    """The user-visible bug: the open message said 'capture-only (no live model)'
+    while stocks_live.py was running. When status is momentarily unreadable, the
+    descriptor must follow the RUNNING PROCESS, not a stale log string."""
+    # status readable -> its own config wins
+    assert shadow_descriptor({"config": "ev no-micro 5s dz4 spread<2bp"}, "live") \
+        == "ev no-micro 5s dz4 spread<2bp"
+    # status missing but stocks_live.py up -> a live label, NEVER 'capture-only'
+    d = shadow_descriptor(None, "live")
+    assert "capture-only" not in d and "no live model" not in d
+    # genuinely capture-only -> the honest label is allowed
+    assert shadow_descriptor(None, "record") == "capture-only (no live model)"
+    # nothing running -> empty, not a false claim either way
+    assert shadow_descriptor(None, None) == ""
 
 
 def test_in_session_uses_exchange_timezone_not_utc():

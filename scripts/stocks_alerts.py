@@ -42,8 +42,13 @@ from pathlib import Path
 QUEUE_CAP = 250_000          # record.py's asyncio.Queue maxsize
 QUEUE_WARN = 0.5             # warn once the backlog passes this fraction of the cap
 HEARTBEAT_MIN = 60           # minutes between "still alive" messages
+# Matches BOTH capture processes' progress line: record.py prints `rows_written=`,
+# stocks_live.py prints `rows=`. The old pattern only matched record.py, so when
+# read_status momentarily failed the fallback silently matched a STALE record.py
+# line left in the append-only cron log — which is how the open message once
+# announced "capture-only" while stocks_live.py was in fact running.
 LOG_LINE = re.compile(
-    r"\[\+\s*(\d+)s\]\s+events=(\d+)\s+rows_written=(\d+)\s+q_hwm=(\d+)\s+reconnects=(\d+)"
+    r"\[\+\s*(\d+)s\]\s+events=(\d+)\s+rows(?:_written)?=(\d+)\s+q_hwm=(\d+)\s+reconnects=(\d+)"
 )
 NY = zoneinfo.ZoneInfo("America/New_York")
 
@@ -75,13 +80,36 @@ def in_session(now: datetime) -> bool:
     return (et.hour, et.minute) >= (9, 30) and (et.hour, et.minute) < (16, 0)
 
 
-def capture_alive() -> bool:
-    """stocks_live.py is the current session process; record.py is the older
-    capture-only fallback. Either counts as the session being up."""
-    return any(
-        subprocess.run(["pgrep", "-f", pat], capture_output=True, check=False).returncode == 0
-        for pat in ("stocks_live.py", "record.py --market stocks")
-    )
+def capture_kind() -> str | None:
+    """WHICH capture process is up — the authority on whether a live model is
+    running, independent of whether status_stocks.json happens to be readable this
+    instant. 'live' = stocks_live.py (capture + shadow model); 'record' = record.py
+    (capture only); None = nothing. The shadow-book descriptor is derived from THIS,
+    not from a status file that can be momentarily missing at the open tick, so the
+    session-open message can never again announce 'no live model' while one runs."""
+    def running(pat: str) -> bool:
+        return subprocess.run(["pgrep", "-f", pat],
+                              capture_output=True, check=False).returncode == 0
+    if running("stocks_live.py"):
+        return "live"
+    if running("record.py --market stocks"):
+        return "record"
+    return None
+
+
+def shadow_descriptor(status: dict | None, kind: str | None) -> str:
+    """The shadow-book label for the session-open message. status_stocks.json (if
+    readable) is authoritative — it carries the live model's own config string. If it
+    is momentarily unreadable, the RUNNING PROCESS decides: stocks_live.py means a
+    live model is up (never say 'no live model'); only a bare record.py capture is
+    'capture-only'. This is the fix for the false 'capture-only' open message."""
+    if status:
+        return status.get("config", "")
+    if kind == "live":
+        return "live shadow model (warming up)"
+    if kind == "record":
+        return "capture-only (no live model)"
+    return ""
 
 
 def read_status(root: Path) -> dict | None:
@@ -218,13 +246,20 @@ def main() -> None:
     root = Path(args.root)
 
     now = datetime.now(tz=NY)
+    kind = capture_kind()  # 'live' | 'record' | None — the authority on the model
+    alive = kind is not None
     # status_stocks.json (has the shadow book) beats the bare capture log
-    log = read_status(root) or read_log(root) or {
+    status = read_status(root)
+    log = status or read_log(root) or {
         "up_s": 0, "events": 0, "rows": 0, "q_hwm": 0, "reconnects": 0, "dropped": 0,
         "trades": 0, "net_bps": 0.0, "avg_bps": float("nan"), "hit": float("nan"),
         "by_symbol": {}, "config": "", "age_s": 0.0,
     }
-    alive = capture_alive()
+    # The shadow-book descriptor must reflect the RUNNING PROCESS, not a status file
+    # that may be unreadable at the first in-session tick (stocks_live.py writes it
+    # every 30s). Deriving it from `kind` stops the open message from falling back to
+    # the stale "capture-only" cron-log string while the live model is running.
+    log["config"] = shadow_descriptor(status, kind)
 
     state_path = root / "logs" / "stocks_alert_state.json"
     try:
