@@ -24,6 +24,7 @@ import asyncio
 import datetime as dt
 import glob
 import json
+import statistics as stats
 import time
 import urllib.parse
 import urllib.request
@@ -266,6 +267,49 @@ def rolling_green(history_path: Path, today: dict[str, dict]) -> dict[str, str]:
     return tally
 
 
+def cumulative_tally(history_path: Path, today: dict[str, dict]) -> str:
+    """The honest 'is the wall holding?' number, accumulated across every recorded
+    session for the current config (+ today) and pushed nightly so the multi-session
+    verdict answers itself, unattended.
+
+    For each tracked name: the mean nightly phase-mean net, its ACROSS-session stdev
+    (day-to-day fragility — the thing that actually decides deployability, distinct
+    from the within-session ±ph the table shows), and their ratio net/σ. net/σ > 1
+    means the daily edge exceeds its day-to-day noise; nothing in this project has
+    ever cleared that bar, so a real edge would announce itself here as the ratio
+    rising past 1 and STAYING there as n grows. A small-sample over-claim (like the
+    2-session AAPL 'bright spot') shows up as a high ratio at low n that decays."""
+    rows = []
+    if history_path.exists():
+        for line in history_path.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("config") == CONFIG_ID:
+                rows.append(r)
+    rows.append({"result": today})  # today isn't in history yet (appended after send)
+    lines = []
+    for sym in TRACKED:
+        nets = [r["result"].get(sym, {}).get("net_bps") for r in rows]
+        nets = [v for v in nets if v is not None and v == v]  # drop None/NaN sessions
+        if not nets:
+            continue
+        n = len(nets)
+        mean = stats.mean(nets)
+        sd = stats.stdev(nets) if n > 1 else float("nan")
+        ratio = mean / sd if sd and sd == sd else float("nan")
+        green = sum(1 for v in nets if v > 0)
+        sdstr = f"{sd:.1f}" if sd == sd else "  —"
+        rstr = f"{ratio:+.2f}" if ratio == ratio else "  — "
+        lines.append(f"{sym:<5} {mean:>+5.1f}  ±σ{sdstr:>5}  net/σ {rstr:>6}"
+                     f"  ({green}/{n} grn, n={n})")
+    if not lines:
+        return ""
+    return ("cumulative across sessions (want net/σ &gt; 1 — none has yet):\n"
+            f"<pre>{chr(10).join(lines)}</pre>")
+
+
 def backfill(root: Path, dbs: list[str]) -> None:
     """Score past sessions under the CURRENT config and append history rows (no
     send). Seeds the rolling tally so the candidate's track record shows up
@@ -324,6 +368,7 @@ def main() -> None:
     result = asyncio.run(screen(db))
     history = root / "logs" / "equities_digest_history.jsonl"
     tally = rolling_green(history, result)
+    cum = cumulative_tally(history, result)
 
     # Aligned monospace table inside <pre> (Telegram HTML). Columns:
     # dir = model direction acc, Δd = edge over the best naive baseline, net =
@@ -371,6 +416,8 @@ def main() -> None:
         f"* = tracked. top {len(show)} of {len(result)} by net\n"
         f"<pre>{table}</pre>"
     )
+    if cum:
+        msg += f"\n{cum}"
 
     if args.no_send:
         print(msg)
