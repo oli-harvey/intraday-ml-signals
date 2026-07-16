@@ -178,7 +178,10 @@ def _on_grid(rows, horizon_ns: int, phase_ns: int):
 # sequential replay passes. Results are IDENTICAL: pipelines are per-symbol
 # independent (no cross-feed here) and replay is deterministic — pinned by
 # tests/test_equities_digest.py.
-BATCH_SYMBOLS = 4
+# 2: even after replay was made streaming, a chunk holding two ~2M-row names
+# (the 3-symbol-era sessions put ALL of NVDA+AAPL+SPY in one chunk at batch=4)
+# still OOM'd the box mid-backfill. Two symbols/pass is the worst case that fits.
+BATCH_SYMBOLS = 2
 
 
 def _score_symbol(sym: str, rows: list, hn: int, phases: list[int]) -> dict:
@@ -337,7 +340,7 @@ def cumulative_tally(history_path: Path, today: dict[str, dict]) -> str:
             f"<pre>{chr(10).join(lines)}</pre>")
 
 
-def backfill(root: Path, dbs: list[str]) -> None:
+def backfill(root: Path, dbs: list[str], batch: int = BATCH_SYMBOLS) -> None:
     """Score past sessions under the CURRENT config and append history rows (no
     send). Seeds the rolling tally so the candidate's track record shows up
     immediately instead of building over days. Skips a day already recorded for
@@ -363,7 +366,7 @@ def backfill(root: Path, dbs: list[str]) -> None:
         if day in seen:
             print(f"{day}: already recorded for {CONFIG_ID} — skip")
             continue
-        result = asyncio.run(screen(Path(dbp)))
+        result = asyncio.run(screen(Path(dbp), batch=batch))
         with history.open("a") as fh:
             fh.write(json.dumps({
                 "ts": dt.datetime.now(dt.UTC).isoformat(), "day": day,
@@ -381,11 +384,13 @@ def main() -> None:
     ap.add_argument("--no-send", action="store_true", help="print instead of Telegram")
     ap.add_argument("--backfill", nargs="+", metavar="DB",
                     help="score these past DBs into history (no send) then exit")
+    ap.add_argument("--batch", type=int, default=BATCH_SYMBOLS,
+                    help="symbols per replay pass (memory/speed trade; 1 = safest)")
     args = ap.parse_args()
     root = Path(args.root)
 
     if args.backfill:
-        backfill(root, args.backfill)
+        backfill(root, args.backfill, batch=args.batch)
         return
 
     db = latest_db(root, args.db)
@@ -397,7 +402,7 @@ def main() -> None:
         print(f"{day}: already scored for {CONFIG_ID} — nothing new to report")
         return
 
-    result = asyncio.run(screen(db))
+    result = asyncio.run(screen(db, batch=args.batch))
     history = root / "logs" / "equities_digest_history.jsonl"
     tally = rolling_green(history, result)
     cum = cumulative_tally(history, result)
