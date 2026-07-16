@@ -42,6 +42,7 @@ from pathlib import Path
 QUEUE_CAP = 250_000          # record.py's asyncio.Queue maxsize
 QUEUE_WARN = 0.5             # warn once the backlog passes this fraction of the cap
 HEARTBEAT_MIN = 60           # minutes between "still alive" messages
+DISK_WARN_PCT = 85           # capture writes ~350MB/day; warn before the disk kills it
 # Matches BOTH capture processes' progress line: record.py prints `rows_written=`,
 # stocks_live.py prints `rows=`. The old pattern only matched record.py, so when
 # read_status momentarily failed the fallback silently matched a STALE record.py
@@ -190,6 +191,13 @@ def db_size_mb(root: Path) -> float:
     return dbs[-1].stat().st_size / 1e6 if dbs else 0.0
 
 
+def disk_used_pct(root: Path) -> float:
+    """Used fraction of the filesystem the capture writes to."""
+    import shutil
+    u = shutil.disk_usage(root)
+    return 100.0 * (u.total - u.free) / u.total
+
+
 def detect(prev: dict, cur: dict) -> list[str]:
     """Pure transition logic (unit-tested). prev/cur are condensed states."""
     out: list[str] = []
@@ -234,6 +242,12 @@ def detect(prev: dict, cur: dict) -> list[str]:
             f"⚠️ stocks websocket reconnects: {cur['reconnects']} "
             f"(was {prev.get('reconnects', 0)}) — usually a stalled writer"
         )
+    # disk fills at ~350MB/session; warn once on the way up, any time of day
+    if cur.get("disk_pct", 0.0) >= DISK_WARN_PCT > prev.get("disk_pct", 0.0):
+        out.append(
+            f"⚠️ disk {cur['disk_pct']:.0f}% full — run "
+            f"scripts/archive_sessions.py (or check logs/) before capture dies"
+        )
     return out
 
 
@@ -277,7 +291,7 @@ def main() -> None:
         state = "open"
 
     cur = {**log, "state": state, "db_mb": db_size_mb(root), "ts": time.time(),
-           "last_beat": prev.get("last_beat", 0)}
+           "disk_pct": disk_used_pct(root), "last_beat": prev.get("last_beat", 0)}
 
     msgs = detect(prev, cur)
 

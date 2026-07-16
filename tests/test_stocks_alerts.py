@@ -142,6 +142,14 @@ def test_shadow_descriptor_never_says_capture_only_while_live_model_runs():
     assert shadow_descriptor(None, None) == ""
 
 
+def test_disk_warning_fires_once_on_the_way_up():
+    quiet = _state(disk_pct=60.0)
+    full = _state(disk_pct=91.0)
+    assert any("disk 91% full" in m for m in detect(quiet, full))
+    # already high -> no repeat every 5 minutes
+    assert not any("disk" in m for m in detect(full, full))
+
+
 def test_in_session_uses_exchange_timezone_not_utc():
     # 09:29 ET is closed, 09:30 ET is open — regardless of DST
     assert not in_session(datetime(2026, 7, 13, 9, 29, tzinfo=NY))
