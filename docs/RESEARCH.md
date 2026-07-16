@@ -752,20 +752,19 @@ edge DECAYS with horizon (reversion fades — d-best falls monotonically), and (
 fragility GROWS (fewer trades -> noisier; ±phase doubles from 5s to 30s). Net collapses to
 ~0 by 30s. 5s is the optimal horizon, which is the reversion story restated.
 
-**The one bright spot:** AAPL @ 5s is the FIRST config in the project with net/±ph > 1
-(effect > its own phase fragility: +2.94 vs ±1.90) AND positive on both sessions. NVDA
-never clears that bar (ratio 0.77 — its net IS smaller than its phase swing). On the full
-4-session phase sweep AAPL was +0.99/+3.12/+1.36/+2.74 (positive all 4, still swinging).
-So if anything here is worth tracking it is AAPL @ 5s, not NVDA — a reversal of the
-original headline. Still marginal (~+2bps, handful of sessions), not deployable.
+**⚠ SUPERSEDED — do not cite the table above or the "bright spot" below.** The 2-session
+run (07-08/07-10) was preliminary; both are corrected by the 4-session sweep and again by the
+6-session sweep in the sections that follow. The `net/±ph > 1` "bright spot" for AAPL @ 5s was
+a small-sample artifact — it does not survive more sessions. Kept here only as the record of
+the over-claim the project's own fragility metric then caught. The horizon *refutation*
+(longer = worse, 5s optimal) is the durable finding and is reconfirmed below.
 
-**State of the project, honestly:** every lever is now exhausted — execution/maker (closed),
-cheaper venue via equities (real direction, sub-toll net), spread-conditional entry (lucky
-grid, retracted), horizon (refuted). What remains is consistent and small: real short-horizon
-reversion DIRECTION on liquid single-name tech (d-best +0.03..+0.06, replicated), whose
-net-of-cost value is marginal and phase-fragile. No durable edge has been demonstrated. The
-honest posture is: keep the phase-swept rolling screen running (it now can't be fooled by a
-grid), watch AAPL @ 5s across more sessions, and expect the wall to hold.
+**State of the project, honestly (as of the 2-session run):** every lever is exhausted —
+execution/maker (closed), cheaper venue via equities (real direction, sub-toll net),
+spread-conditional entry (lucky grid, retracted), horizon (refuted). What remains is
+consistent and small: real short-horizon reversion DIRECTION on liquid single-name tech
+(d-best +0.03..+0.06, replicated), whose net-of-cost value is marginal and phase-fragile.
+No durable edge demonstrated. See the corrected verdict below for the current numbers.
 
 ### 2026-07-15 (correction) — the AAPL "bright spot" was a 2-session artifact
 
@@ -797,3 +796,58 @@ reliably above slippage. Real short-horizon structure; no deployable net-of-cost
 wall holds. Methodology (phase-mean + fragility, deterministic, corrected ablation) is the
 durable deliverable — it makes the next over-claim impossible to ship silently, including,
 belatedly, this one.
+
+## 2026-07-16 — more data, a cross-check, and a time-of-day test. The wall holds on all three.
+
+Three things run against the corrected methodology; none breaks the wall.
+
+**1. The honest 5s number on 6 sessions (was 4).** Added 07-14 (07-13 stays quarantined;
+07-15 was still live). Phase-swept horizon sweep, 8 phases, dz4 spread<2bp:
+
+| sym | horizon | net (phase-mean) | ±phase | net/±ph | d-best | sessions>0 |
+|-----|---------|------------------|--------|---------|--------|-----------|
+| NVDA | 5s | +2.71 | 4.14 | **0.65** | 0.057 | 6/6 |
+| AAPL | 5s | +1.74 | 2.18 | **0.80** | 0.029 | 6/6 |
+| (both) | 15s/30s/60s | ≤+0.6 | grows | ≤0.15 | decays | ≤3/6 |
+
+Both single names are positive on **all six** sessions at 5s (direction is real and
+consistent), but **neither clears net/±ph > 1** and 50% more data did not move them toward
+it: NVDA 0.54→0.65, AAPL 0.91→**0.80** (down — the AAPL "bright spot" keeps shrinking as n
+grows, exactly the small-sample-artifact signature). 5s remains optimal; longer strictly
+worse, now confirmed on 6 sessions.
+
+**2. Live shadow book == offline backtest, exactly, on a real session.** `live_vs_backtest.py`
+drives BOTH the live `LiveSim` books and the offline `evaluate` row-collection off ONE replay
+pass of 07-14, so predictions are identical by construction and only the trade-accounting is
+under test. Result: identical trade counts and net to 4 decimals (Δnet 0.0000) for NVDA/AAPL/
+SPY, both cadences. **No train/serve skew** — the nightly digest and the live Telegram numbers
+mean the same thing, so the negative result is trustworthy from both directions. (Side note:
+07-14 was NVDA-good / AAPL-**negative** windowed — the day-to-day swing the fragility metric
+exists to expose, and another nail in the AAPL-is-special coffin.)
+
+**3. Time-of-day conditioning (open vs midday) — the reversion is strongest at the open
+DIRECTIONALLY, but net-of-cost the open is the WORST slice.** `tod_sweep.py`, ET buckets,
+same machinery. Only DST-fixed sessions captured the 09:30 open, so open/close rest on n=2
+and few trades — the noisiest cells, flagged as such:
+
+| sym | bucket | net | ±phase | net/±ph | d-best | sess>0 |
+|-----|--------|-----|--------|---------|--------|--------|
+| NVDA | open | +1.60 | 11.32 | 0.14 | **0.101** | 2/2 |
+| NVDA | mid/aft | +2.7/+2.9 | ~6 | 0.44/**0.51** | 0.05/0.06 | 4-5/6 |
+| AAPL | open | +4.33 | 8.59 | 0.50 | 0.037 | 2/2 |
+| AAPL | morn | +2.08 | 3.62 | **0.57** | 0.049 | 5/6 |
+| (both) | close | swings ±5 | ~19 / ~8 | ≤0.26 | ~0 | thin |
+
+The microstructure prior is half-right: **d-best IS highest at the open** (NVDA 0.101 — the
+reversion signal genuinely concentrates there). But opening spreads are wide and phase
+fragility explodes (±11–19bps), so net-of-cost the open is the LOWEST net/±ph bucket, not the
+highest. **No bucket clears net/±ph > 1**; the trustworthy midday/afternoon cells (n=5-6) top
+out at ~0.55. The flat whole-session headline was not hiding an open-only edge — it was
+averaging a directionally-stronger-but-costlier open against a weaker-but-cheaper afternoon.
+
+**Verdict, unchanged and now stress-tested from three new directions:** a weak, real, positive
+short-horizon reversion TILT on liquid single-name tech (5s, direction replicated 6/6, ~+2bps
+phase-mean) whose net-of-cost value is below its own phase/day fragility (net/±ph 0.65-0.80)
+and is not rescued by horizon, cheaper venue, spread-gate, OR time-of-day. Not deployable. The
+un-foolable rolling screen now also posts a cumulative net/σ tally nightly, so if the wall ever
+cracks it will announce itself unattended. Nothing so far cracks it.
