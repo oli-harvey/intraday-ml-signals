@@ -431,7 +431,7 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
 <div class="scatter-row">{scatters or scatter_placeholder}</div>
 
 <h2>rolling MAE edge vs zero baseline</h2>
-<div class="chart">{svg_chart(edge_series, value_format="{{:+.1f}}%")}</div>
+<div class="chart">{svg_chart(edge_series, value_format="{:+.1f}%")}</div>
 
 <h2>orders (crypto pipeline — the only experiment that trades)</h2>
 {orders_section(status)}
