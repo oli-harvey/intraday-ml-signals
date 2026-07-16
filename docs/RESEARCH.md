@@ -872,3 +872,35 @@ No mid-course peeking exceptions, no swapping the tracked names after the fact, 
 quarantined sessions. Basis for the thresholds: both ratios are "effect exceeds its own
 noise" — the minimum any deployable claim must clear, and nothing in 7 sessions has come
 within 20% of either.
+
+## 2026-07-16 — cross-sectional residual reversion: the LAST untested lever. Same wall.
+
+Every prior test was univariate. `scripts/xsec_sweep.py` tests the one genuinely new signal
+class our simultaneous 30-symbol capture enables: fade the RESIDUAL r_sym − r_hedge over 5s
+buckets (hedge = SPY/QQQ, β=1 so zero fitted parameters), dollar-neutral, both legs' spreads
+charged at entry, phase-swept (8 offsets), rule-based — nothing to overfit. Only the SPY-hedge
+cells have 6 sessions (QQQ/MSFT/TSLA exist in 1 local session — the universe was 3 names
+before 07-14; those cells are n=1 leads, not results).
+
+| sym/hedge | dz | gross | net | ±phase | net/±ph | dir | tr/day | sess>0 |
+|-----------|----|-------|-----|--------|---------|-----|--------|--------|
+| AAPL/SPY | 8 | +3.12 | +1.19 | 2.12 | 0.56 | 0.57 | 119 | 5/6 |
+| AAPL/SPY | 12 | +4.18 | **+2.23** | 2.96 | **0.75** | 0.57 | 65 | **6/6** |
+| AAPL/SPY | 16 | +4.80 | +2.82 | 5.29 | 0.53 | 0.57 | 38 | 6/6 |
+| NVDA/SPY | 12 | +3.59 | +1.72 | 4.78 | 0.36 | 0.54 | 166 | 6/6 |
+| NVDA/SPY | 16 | +4.40 | +2.53 | 5.97 | 0.42 | 0.54 | 129 | 6/6 |
+| TSLA/* | any | ≤+0.95 | negative | — | — | 0.51 | — | 0/1 |
+
+**The residual genuinely reverts** — dir 0.54–0.57 vs the 0.5 coin-flip a β=1 hedge implies,
+gross monotonically rising with the dead zone to +5.4–5.8bps, and at dz12–16 the NET
+phase-mean is positive on **all six sessions** for both names. That is the cleanest gross
+signal the project has found. And it still fails the same way everything fails: **phase
+fragility grows faster than the edge** (±ph 3.0→9.4 as dz rises), peak net/±ph = 0.75
+(AAPL/SPY dz12) — below the univariate AAPL's 0.80, below the bar, on the exact
+selectivity-vs-fragility ridge every other lever died on. The double toll costs ~+0.5–1bp
+and buys a cleaner signal worth about the same. TSLA's residual barely reverts (0.51) —
+idiosyncratic TSLA moves trend, consistent with the liquidity-graded fade found on 07-06.
+
+**Verdict: fifth lever, same wall.** Real structure (now in residual space too), sub-fragility
+net. The kill/continue rule above stands unmodified; this result does not feed the tally (it
+is a different config family) and does not reopen anything.
