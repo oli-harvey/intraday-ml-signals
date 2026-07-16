@@ -169,7 +169,73 @@ def _on_grid(rows, horizon_ns: int, phase_ns: int):
     return kept
 
 
-async def screen(db: Path) -> dict[str, dict]:
+# Symbols per replay pass. evaluate() — and ReplaySource under it, which
+# fetchall()s EVERY quote for its symbol list before yielding — holds the whole
+# pass in memory. A 30-symbol pass over a full session is several GB; on the
+# 3.7GB server the nightly digest was OOM-KILLED on 07-14/15 and the rolling
+# screen silently stopped (the one component that must never fail silently).
+# Batching bounds peak memory at ~batch/30 of the day at the cost of extra
+# sequential replay passes. Results are IDENTICAL: pipelines are per-symbol
+# independent (no cross-feed here) and replay is deterministic — pinned by
+# tests/test_equities_digest.py.
+BATCH_SYMBOLS = 4
+
+
+def _score_symbol(sym: str, rows: list, hn: int, phases: list[int]) -> dict:
+    """Day result for one symbol at the candidate config (metric semantics in
+    screen()'s docstring)."""
+    nan = float("nan")
+
+    # direction: score on independent windows
+    seg = SymbolScore(sym, _non_overlapping(rows, hn)).overall()
+
+    def _sim(rs, allow_short=True):
+        return SymbolScore(sym, rs).simulate_trading(
+            hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
+            max_spread_bps=SPREAD_CAP_BPS, allow_short=allow_short,
+        )
+
+    pq = _sim(rows)
+    # The full 10-phase sweep (x2 for long-only) over ~1M rows is ~20 passes/symbol
+    # — fine for 3 tracked names, far too slow nightly across 30. Phase-sweep only
+    # the TRACKED candidates; for the rest, one grid + per-quote is enough to flag a
+    # surprise (and per-quote is the conservative honest number anyway).
+    if sym in TRACKED:
+        grids = [_sim(_on_grid(rows, hn, p)) for p in phases]
+        nets = [g.avg_net_bps for g in grids if g.trades]
+        lo_nets = [
+            v for p in phases
+            if (v := _sim(_on_grid(rows, hn, p), allow_short=False).avg_net_bps) == v
+        ]
+        net_bps = (sum(nets) / len(nets)) if nets else nan
+        net_spread = (max(nets) - min(nets)) if nets else nan
+        net_lo = (sum(lo_nets) / len(lo_nets)) if lo_nets else nan
+        trades = int(sum(g.trades for g in grids) / max(1, len(grids)))
+        hit = (sum(g.hit_rate for g in grids if g.trades) / len(nets)) if nets else nan
+    else:
+        g0 = _sim(_on_grid(rows, hn, 0))
+        net_bps, net_spread = g0.avg_net_bps, nan
+        net_lo = _sim(_on_grid(rows, hn, 0), allow_short=False).avg_net_bps
+        trades = g0.trades
+        # was: reused the loop-carried `grids`/`nets` of the LAST TRACKED symbol —
+        # every non-tracked hit rate in history silently belonged to NVDA/AAPL.
+        hit = g0.hit_rate
+
+    return {
+        "dir": seg.dir_acc,
+        "base": seg.dir_best_baseline,
+        "d_best": seg.dir_acc - seg.dir_best_baseline,
+        "net_bps": net_bps,          # phase-mean (tracked) / single grid (others)
+        "net_spread": net_spread,    # phase fragility (tracked only)
+        "net_lo": net_lo,
+        "net_pq": pq.avg_net_bps,
+        "trades": trades,
+        "trades_pq": pq.trades,
+        "hit": hit,
+    }
+
+
+async def screen(db: Path, batch: int = BATCH_SYMBOLS) -> dict[str, dict]:
     """Per-symbol day result at the candidate config (no-micro EV @ 5s, dz4,
     spread-conditional entry < SPREAD_CAP_BPS).
 
@@ -185,61 +251,22 @@ async def screen(db: Path) -> dict[str, dict]:
 
     Direction metrics still use non-overlapping rows (independent outcomes) — that is
     what non_overlapping is FOR. The trade sim never does.
+
+    Evaluated `batch` symbols per replay pass to bound memory (see BATCH_SYMBOLS).
     """
     symbols = db_symbols(db)
     cfg = FeatureConfig(exclude=MICRO_FEATURES)
-    res = await evaluate(str(db), symbols, model_kind="ev", horizon_s=HORIZON_S,
-                         non_overlapping=False, feature_config=cfg)  # ALL rows
     hn = int(HORIZON_S * 1e9)
     phases = [int(i * hn / PHASES) for i in range(PHASES)]
-    nan = float("nan")
     out = {}
-    for sym in symbols:
-        rows = res.symbols[sym].rows
-
-        # direction: score on independent windows
-        seg = SymbolScore(sym, _non_overlapping(rows, hn)).overall()
-
-        def _sim(rs, allow_short=True):
-            return SymbolScore(sym, rs).simulate_trading(  # noqa: B023
-                hn, fee_bps=0.0, dead_zone_bps=DEAD_ZONE_BPS,
-                max_spread_bps=SPREAD_CAP_BPS, allow_short=allow_short,
-            )
-
-        pq = _sim(rows)
-        # The full 10-phase sweep (x2 for long-only) over ~1M rows is ~20 passes/symbol
-        # — fine for 3 tracked names, far too slow nightly across 30. Phase-sweep only
-        # the TRACKED candidates; for the rest, one grid + per-quote is enough to flag a
-        # surprise (and per-quote is the conservative honest number anyway).
-        if sym in TRACKED:
-            grids = [_sim(_on_grid(rows, hn, p)) for p in phases]
-            nets = [g.avg_net_bps for g in grids if g.trades]
-            lo_nets = [
-                v for p in phases
-                if (v := _sim(_on_grid(rows, hn, p), allow_short=False).avg_net_bps) == v
-            ]
-            net_bps = (sum(nets) / len(nets)) if nets else nan
-            net_spread = (max(nets) - min(nets)) if nets else nan
-            net_lo = (sum(lo_nets) / len(lo_nets)) if lo_nets else nan
-            trades = int(sum(g.trades for g in grids) / max(1, len(grids)))
-        else:
-            g0 = _sim(_on_grid(rows, hn, 0))
-            net_bps, net_spread = g0.avg_net_bps, nan
-            net_lo = _sim(_on_grid(rows, hn, 0), allow_short=False).avg_net_bps
-            trades = g0.trades
-
-        out[sym] = {
-            "dir": seg.dir_acc,
-            "base": seg.dir_best_baseline,
-            "d_best": seg.dir_acc - seg.dir_best_baseline,
-            "net_bps": net_bps,          # phase-mean (tracked) / single grid (others)
-            "net_spread": net_spread,    # phase fragility (tracked only)
-            "net_lo": net_lo,
-            "net_pq": pq.avg_net_bps,
-            "trades": trades,
-            "trades_pq": pq.trades,
-            "hit": (sum(g.hit_rate for g in grids if g.trades) / len(nets)) if nets else nan,
-        }
+    for i in range(0, len(symbols), batch):
+        chunk = symbols[i:i + batch]
+        res = await evaluate(str(db), chunk, model_kind="ev", horizon_s=HORIZON_S,
+                             non_overlapping=False, feature_config=cfg)  # ALL rows
+        for sym in chunk:
+            rows = res.symbols[sym].rows
+            out[sym] = _score_symbol(sym, rows, hn, phases)
+            rows.clear()  # free each symbol's rows before the next pass
     return out
 
 
