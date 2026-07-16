@@ -16,9 +16,18 @@ import duckdb
 from .base import DataSource
 from .schema import Bar, MarketEvent, Quote, Side, Tick
 
+# Rows per fetchmany batch. fetchall() materialized EVERY row of a session as
+# Python tuples (~400B each; a 3-symbol day is ~1GB) before yielding anything —
+# that spike, on top of the evaluation's own rows, is what OOM-killed the nightly
+# digest on the 3.7GB server. Streaming bounds replay memory at ~3 batches.
+_FETCH_ROWS = 50_000
+
 
 def _load_events(db_path: str, symbols: Sequence[str] | None) -> Iterator[MarketEvent]:
     conn = duckdb.connect(db_path, read_only=True)
+    # Replay runs beside the live capture on a small box: cap DuckDB's own memory
+    # (it spills sorts to disk rather than getting the process OOM-killed).
+    conn.execute("SET memory_limit='512MB'")
     where = ""
     params: list = []
     if symbols:
@@ -32,30 +41,41 @@ def _load_events(db_path: str, symbols: Sequence[str] | None) -> Iterator[Market
     # (ts_ns, symbol) for a deterministic total order that is also the semantically
     # correct one: arrival batch first, exchange time within the batch.
     order = "ORDER BY recv_ns, ts_ns, symbol"
+
+    def stream(table: str, build) -> Iterator[tuple[int, MarketEvent]]:
+        # one cursor per table (independent result sets on a shared connection);
+        # each stream preserves the total order above, so heapq.merge on recv_ns
+        # yields the exact sequence the old fetchall version did — determinism
+        # is pinned by the existing replay tests.
+        cur = conn.cursor()
+        try:
+            cur.execute(f"SELECT * FROM {table}{where} {order}", params)
+            while batch := cur.fetchmany(_FETCH_ROWS):
+                for row in batch:
+                    yield build(row)
+        finally:
+            cur.close()
+
+    def tick(row) -> tuple[int, MarketEvent]:
+        symbol, ts_ns, price, size, side, recv_ns = row
+        return recv_ns, Tick(symbol, ts_ns, price, size, Side(side) if side else None, recv_ns)
+
+    def quote(row) -> tuple[int, MarketEvent]:
+        symbol, ts_ns, bid, ask, bid_size, ask_size, recv_ns = row
+        return recv_ns, Quote(symbol, ts_ns, bid, ask, bid_size, ask_size, recv_ns)
+
+    def bar(row) -> tuple[int, MarketEvent]:
+        symbol, ts_ns, o, h, lo, c, v, recv_ns = row
+        return recv_ns, Bar(symbol, ts_ns, o, h, lo, c, v, recv_ns)
+
     try:
-        trades = conn.execute(f"SELECT * FROM trades{where} {order}", params).fetchall()
-        quotes = conn.execute(f"SELECT * FROM quotes{where} {order}", params).fetchall()
-        bars = conn.execute(f"SELECT * FROM bars{where} {order}", params).fetchall()
+        for _, event in heapq.merge(
+            stream("trades", tick), stream("quotes", quote), stream("bars", bar),
+            key=lambda x: x[0],
+        ):
+            yield event
     finally:
         conn.close()
-
-    def tick_iter() -> Iterator[tuple[int, MarketEvent]]:
-        for symbol, ts_ns, price, size, side, recv_ns in trades:
-            yield (
-                recv_ns,
-                Tick(symbol, ts_ns, price, size, Side(side) if side else None, recv_ns),
-            )
-
-    def quote_iter() -> Iterator[tuple[int, MarketEvent]]:
-        for symbol, ts_ns, bid, ask, bid_size, ask_size, recv_ns in quotes:
-            yield recv_ns, Quote(symbol, ts_ns, bid, ask, bid_size, ask_size, recv_ns)
-
-    def bar_iter() -> Iterator[tuple[int, MarketEvent]]:
-        for symbol, ts_ns, o, h, lo, c, v, recv_ns in bars:
-            yield recv_ns, Bar(symbol, ts_ns, o, h, lo, c, v, recv_ns)
-
-    for _, event in heapq.merge(tick_iter(), quote_iter(), bar_iter(), key=lambda x: x[0]):
-        yield event
 
 
 class ReplaySource(DataSource):
