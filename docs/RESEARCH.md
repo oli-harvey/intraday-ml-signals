@@ -851,3 +851,24 @@ phase-mean) whose net-of-cost value is below its own phase/day fragility (net/±
 and is not rescued by horizon, cheaper venue, spread-gate, OR time-of-day. Not deployable. The
 un-foolable rolling screen now also posts a cumulative net/σ tally nightly, so if the wall ever
 cracks it will announce itself unattended. Nothing so far cracks it.
+
+## 2026-07-16 — PRE-REGISTERED kill/continue rule (written before the data arrives)
+
+This project's recurring failure mode is deciding *after* seeing the numbers. So the decision
+rule for the equities hunt is fixed NOW, while the tally stands at 7 clean sessions and no
+config clears any bar. When the history under `ev_nomicro3_5s_dz4_sc2_phasemean10` reaches
+**15 clean sessions**:
+
+- **CONTINUE** only if, for at least one tracked name, BOTH hold on the full tally:
+  (a) cumulative **net/σ ≥ 1** (mean nightly phase-mean net ≥ its across-session stdev), AND
+  (b) the phase-swept **net/±ph ≥ 1** re-run over all 15 sessions.
+- **ARCHIVE** otherwise: active equities research stops; capture + nightly screen may keep
+  running unattended (they are cheap and the tally keeps accruing), but no new levers, no new
+  configs, no "one more idea" without NEW data first. A later reopen requires the nightly
+  tally itself to print net/σ ≥ 1 sustained for 5 consecutive sessions — the screen must
+  volunteer the signal; we do not go looking for it.
+
+No mid-course peeking exceptions, no swapping the tracked names after the fact, no counting
+quarantined sessions. Basis for the thresholds: both ratios are "effect exceeds its own
+noise" — the minimum any deployable claim must clear, and nothing in 7 sessions has come
+within 20% of either.

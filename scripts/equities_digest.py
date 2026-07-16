@@ -355,6 +355,11 @@ def backfill(root: Path, dbs: list[str]) -> None:
     history.parent.mkdir(parents=True, exist_ok=True)
     for dbp in sorted(dbs):
         day = Path(dbp).stem.replace("equities_", "")
+        if not Path(dbp).exists():
+            # a missing DB must not kill the rest of the list (it did: the server
+            # has no 07-06, and the crash left 6 later sessions unscored)
+            print(f"{day}: {dbp} not found — skip")
+            continue
         if day in seen:
             print(f"{day}: already recorded for {CONFIG_ID} — skip")
             continue
