@@ -927,3 +927,8 @@ carries fragility bigger than the mean, and ±ph on 07-16 was 7.3. The pre-regis
 requires BOTH ratios ≥ 1 at n=15 exactly so that a good week on one axis doesn't restart the
 research loop at n=7 — and 5 of these 7 sessions are one high-vol tech week, the known regime
 caveat. **Decision remains scheduled at n=15. Nothing is reopened. The screen accumulates.**
+
+**Addendum, hours later (07-15 backfilled, n=8):** NVDA +4.09 that day, AAPL negative — tally
+now NVDA **1.68** (8/8), AAPL **0.84** (7/8). The "both names > 1" observation above lasted
+exactly one session. QED the rule: at this n, single days move the ratio by ±0.6; anyone
+acting on the n=7 read would already have been wrong about AAPL by dinner. n=15 stands.
