@@ -29,6 +29,20 @@ def load_env(path: str) -> dict[str, str]:
     return out
 
 
+def holdings_line(cur: dict) -> str:
+    """Balance + what is actually held right now — appended to every trade alert
+    so a buy/sell message answers 'and where does that leave me?' by itself."""
+    pos = cur.get("positions") or {}
+    if pos:
+        held = ", ".join(
+            f"{p['qty']:.6g} {s.split('/')[0]} @ ${p['entry']:,.2f}"
+            for s, p in sorted(pos.items())
+        )
+    else:
+        held = "none"
+    return f"bal ${cur.get('equity', 0):,.0f} · holdings: {held}"
+
+
 def detect_alerts(prev: dict, cur: dict) -> list[str]:
     """Pure transition logic (unit-tested). prev/cur: condensed state dicts."""
     alerts = []
@@ -50,7 +64,8 @@ def detect_alerts(prev: dict, cur: dict) -> list[str]:
         alerts.append(
             f"\N{CHART WITH UPWARDS TREND} trade: {last.get('side', '?')}"
             f" {last.get('qty', 0):.6g} {last.get('symbol', '?')}"
-            f" @ {last.get('price', 0):,.2f} — {last.get('note', '')[:60]}"
+            f" @ {last.get('price', 0):,.2f} — {last.get('note', '')[:60]}\n"
+            f"{holdings_line(cur)}"
         )
     return alerts
 
@@ -64,6 +79,8 @@ def condense(status: dict, age_s: float) -> dict:
         "orders": status.get("orders", 0),
         "pnl": status.get("pnl_today", 0.0),
         "last_order": orders[-1] if orders else None,
+        "equity": status.get("equity", 0.0),
+        "positions": status.get("positions", {}),  # absent until pipeline restart
     }
 
 

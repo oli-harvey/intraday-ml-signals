@@ -4,10 +4,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from alerts import condense, detect_alerts  # noqa: E402
+from alerts import condense, detect_alerts, holdings_line  # noqa: E402
 
 BASE = {"fresh": "live", "breaker": "ok", "order_errors": 0, "orders": 0,
-        "pnl": 0.0, "last_order": None}
+        "pnl": 0.0, "last_order": None, "equity": 99_930.0, "positions": {}}
 
 
 def test_no_alerts_when_nothing_changed() -> None:
@@ -35,6 +35,25 @@ def test_new_trade_alert_includes_details() -> None:
         "price": 61000.0, "note": "enter long"})
     alerts = detect_alerts(dict(BASE), cur)
     assert len(alerts) == 1 and "BTC/USD" in alerts[0] and "buy" in alerts[0]
+
+
+def test_trade_alert_reports_balance_and_holdings() -> None:
+    """Every buy/sell message must answer 'and where does that leave me?'"""
+    cur = dict(BASE, orders=1,
+               last_order={"side": "buy", "qty": 6.71, "symbol": "SOL/USD",
+                           "price": 74.46, "note": "enter long"},
+               positions={"SOL/USD": {"qty": 6.71, "entry": 74.462},
+                          "BTC/USD": {"qty": 0.0016, "entry": 61_250.0}})
+    (msg,) = detect_alerts(dict(BASE), cur)
+    assert "bal $99,930" in msg
+    assert "6.71 SOL @ $74.46" in msg
+    assert "0.0016 BTC @ $61,250.00" in msg
+
+
+def test_holdings_line_when_flat() -> None:
+    assert holdings_line(dict(BASE)) == "bal $99,930 · holdings: none"
+    # status.json from a pre-restart pipeline has no positions key at all
+    assert "holdings: none" in holdings_line({"equity": 5.0})
 
 
 def test_condense_marks_offline_on_stale_status() -> None:

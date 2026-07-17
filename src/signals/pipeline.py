@@ -337,6 +337,12 @@ class Pipeline:
                 for s, m in metrics.items()
             },
             "open_positions": self.book.open_count,
+            # per-position detail so alert messages can say WHAT is held, not just
+            # how many (Telegram buy/sell alerts append balance + holdings)
+            "positions": {
+                s: {"qty": p.qty, "entry": p.entry_price}
+                for s, p in self.book.positions.items()
+            },
             "orders": self.orders_submitted,
             "order_errors": self.order_errors,
             "pnl_today": self.risk.realized_pnl_today,
