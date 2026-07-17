@@ -932,3 +932,37 @@ caveat. **Decision remains scheduled at n=15. Nothing is reopened. The screen ac
 now NVDA **1.68** (8/8), AAPL **0.84** (7/8). The "both names > 1" observation above lasted
 exactly one session. QED the rule: at this n, single days move the ratio by ±0.6; anyone
 acting on the n=7 read would already have been wrong about AAPL by dinner. n=15 stands.
+
+## 2026-07-17 — phase persistence test (a challenge from Oli): luck RE-ROLLS daily. Rule amended, transparently.
+
+Oli asked the right question: "is the luck test needed? surely accumulating samples averages
+lucky and unlucky timings out." That is true **iff phase luck is independent across days** —
+if instead some phases are persistently better (clock-aligned microstructure: quote refresh
+cycles, second-boundary algos), a phase-locked deployment carries a permanent offset that
+never averages out. Empirical question; tested on the net(day, phase) matrix (6 sessions ×
+10 phases, scratch `phase_persist.py`):
+
+- NVDA: per-phase-mean spread sd 0.63 vs 0.51 expected under the no-persistence null;
+  cross-day phase-rank correlation **+0.11**. AAPL: 0.35 vs 0.34; rank corr **−0.08**.
+- **Verdict: no evidence of persistent phase structure. Which phase wins is re-rolled every
+  day.** Even a phase-locked strategy converges to the phase-mean across days; the within-day
+  phase noise (sd ≈ 1.25bps NVDA, 0.83 AAPL per day) only fattens day-to-day variance.
+
+**What survives unchanged:** the phase SWEEP as a backtest-honesty instrument. Its job was
+never forecasting deployment variance — it was killing the cherry-pick (configs get promoted
+BECAUSE their arbitrary grid was lucky; the retracted +3.32 headline was exactly that).
+Every new config headline must still be phase-swept. Non-negotiable.
+
+**What was wrong and is hereby AMENDED (at n=8, before days 9–15 exist):** arm (b) of the
+kill/continue rule used within-day net/±ph as a DEPLOYMENT bar. Given no persistence, that
+mistakes daily-re-rolled noise for a permanent defect — Oli's point, confirmed. Amended rule
+at n=15: **CONTINUE iff, for a tracked name, cumulative net/σ′ ≥ 1, where σ′ inflates the
+across-day σ with the single-phase noise a real deployment feels: σ′ = sqrt(σ² + σ_ph²)**
+(σ_ph = 1.25 NVDA / 0.83 AAPL; a phase-jittered implementation would earn the phase-mean
+directly and may use σ unadjusted). At n=8 this reads NVDA 3.2/√(1.9²+1.25²) ≈ **1.4** (still
+above), AAPL ≈ 0.7 (still below) — the amendment changes the measure, not today's verdict.
+Motivated-reasoning check, stated plainly: this amendment relaxes a bar while the tally looks
+good, which is exactly the failure mode this log documents — it is accepted anyway because it
+was (1) prompted by an outside challenge, (2) decided by a test on already-collected sessions,
+not on tally outcomes, and (3) replaces an ad-hoc bar with the variance a deployment actually
+experiences. The n=15 date and everything else stand.
