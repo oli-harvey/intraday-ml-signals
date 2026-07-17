@@ -904,3 +904,26 @@ idiosyncratic TSLA moves trend, consistent with the liquidity-graded fade found 
 **Verdict: fifth lever, same wall.** Real structure (now in residual space too), sub-fragility
 net. The kill/continue rule above stands unmodified; this result does not feed the tally (it
 is a different config family) and does not reopen anything.
+
+## 2026-07-17 — the screen is live again; first honest tally reads BOTH names > 1 at n=7. No action.
+
+The OOM chain is fixed (batched screen -> streaming replay -> batch=2 default; the cron is now
+flock-guarded so a backfill can never again race the nightly run) and the history is seeded
+under `ev_nomicro3_5s_dz4_sc2_phasemean10`. The first cumulative tally, n=7 clean sessions:
+
+| | per-session phase-mean net (bps) | mean | σ (across days) | net/σ | green |
+|---|---|---|---|---|---|
+| NVDA | +1.19 +3.17 +4.05 +1.92 +0.36 +4.63 +5.96 | **+3.04** | 1.99 | **1.52** | 7/7 |
+| AAPL | +0.53 +0.99 +3.12 +1.36 +2.74 +0.64 +1.05 | +1.49 | 1.03 | **1.45** | 7/7 |
+
+NVDA's PER-QUOTE net (the implementable-without-a-grid cadence) is also 7/7 positive
+(+0.41 +0.41 +3.02 +1.09 +0.03 +2.32 +4.71, mean +1.71). 07-16 is the strongest session yet
+(+5.96 windowed / +4.71 per-quote — nearly equal, i.e. NOT a windowing artifact that day).
+
+**What this does and does not mean.** The across-DAY axis (stability of the phase-mean) now
+clears 1 on both names — an axis never separately tallied before. The within-day axis does
+NOT: net/±ph is still 0.65/0.80, meaning a live strategy running ONE sampling phase still
+carries fragility bigger than the mean, and ±ph on 07-16 was 7.3. The pre-registered rule
+requires BOTH ratios ≥ 1 at n=15 exactly so that a good week on one axis doesn't restart the
+research loop at n=7 — and 5 of these 7 sessions are one high-vol tech week, the known regime
+caveat. **Decision remains scheduled at n=15. Nothing is reopened. The screen accumulates.**
