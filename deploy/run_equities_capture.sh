@@ -43,9 +43,12 @@ ls -1t data/equities_2*.duckdb 2>/dev/null | tail -n +31 | xargs -r rm -f
 # Recompute duration after the wait so a slow start can't overrun the close.
 dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wait — skip"; exit 0; }
 # stocks_live.py = record.py's capture (identical quotes -> identical DuckDB) PLUS the
-# tracked model running live on the same websocket, booking a shadow trading book. It
-# places NO orders. That is what lets the Telegram bot report trades during the
-# session instead of only after the nightly replay.
+# tracked model running live on the same websocket, booking a shadow trading book,
+# PLUS (since 2026-07-18, Oli's call) REAL PAPER ORDERS on the tracked names:
+# NVDA/AAPL, $1000 max/position (whole shares), 2 open max, $25 daily loss cap,
+# EOD flatten scoped to its own symbols (the paper account is shared with crypto).
+# Paper money only; the point is measuring real fills vs the sim's cost model.
 exec .venv/bin/python scripts/stocks_live.py \
   --symbols $SYMBOLS --duration "$dur" --db "$db" \
-  --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2
+  --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2 \
+  --trade --trade-symbols NVDA AAPL --notional 1000 --max-open 2 --daily-loss-cap 25

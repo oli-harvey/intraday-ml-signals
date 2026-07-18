@@ -966,3 +966,33 @@ good, which is exactly the failure mode this log documents — it is accepted an
 was (1) prompted by an outside challenge, (2) decided by a test on already-collected sessions,
 not on tally outcomes, and (3) replaces an ad-hoc bar with the variance a deployment actually
 experiences. The n=15 date and everything else stand.
+
+## 2026-07-18 — OWNER DECISION: skip the n=15 wait, measure with REAL paper orders.
+
+Oli: "n15 is too long for just gathering data... we will carry out trades to test it
+properly — it's a better measurement and only paper money." He is right that it is a better
+measurement: every number so far rests on the sim's cost model (enter/exit at NBBO mid±half-
+spread, zero latency). Real paper fills make that model an empirical question instead of an
+assumption. This is not the tally being abandoned — the shadow books and nightly screen run
+unchanged — it is a THIRD measurement of the same config added on top:
+
+`signals/stockstrader.py`, wired into stocks_live.py behind `--trade` (refused with
+--replay). Enabled from Mon 2026-07-21 via run_equities_capture.sh:
+
+- **Entries at PREDICTION time** (the shadow book books at label-resolution — hindsight; a
+  real trader acts on the forecast), same `simrule.decide` verbatim, windowed cadence (one
+  look per 5s per symbol; phase re-rolls daily per 07-17).
+- NVDA + AAPL, **whole shares** (shorts can't be fractional), $1000 max/position, max 2
+  open, **$25/day realized-loss halt**, EOD flatten. Market DAY orders both ways — paying
+  the spread is the point; that IS the toll being measured.
+- **Every trade records its own frictionless-sim counterpart** (signal-mid → current-mid,
+  minus quoted spread). The headline deliverable is `sim_gap_bps` = real net − sim net:
+  the sim's cost-model error, measured per trade, in Telegram live and nightly.
+- **Shared-account safety:** the crypto pipeline's startup/exit flatten was ACCOUNT-WIDE
+  (`close_all_positions`) — it would have nuked stock positions on any restart, and the
+  stocks EOD flatten would have nuked crypto's. Both now use `flatten_symbols(own)`;
+  `flatten_all` is demoted to a human kill-switch.
+
+Success/failure reads the same as ever, now with real fills: paper avg net per trade vs the
+shadow book's, and sim_gap_bps ≈ 0 (cost model honest) vs strongly negative (the sim was
+flattering us — which would retro-taint every prior number and be a finding in itself).

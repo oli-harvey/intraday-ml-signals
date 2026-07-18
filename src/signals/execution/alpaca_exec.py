@@ -42,7 +42,9 @@ class PaperExecutor:
             )
         return self._client
 
-    def _submit_market_sync(self, symbol: str, side: str, qty: float) -> OrderResult:
+    def _submit_market_sync(
+        self, symbol: str, side: str, qty: float, tif: str = "gtc"
+    ) -> OrderResult:
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
@@ -52,7 +54,8 @@ class PaperExecutor:
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,  # crypto requires GTC/IOC
+                # crypto requires GTC/IOC; US equities market orders use DAY
+                time_in_force=TimeInForce.DAY if tif == "day" else TimeInForce.GTC,
             )
         )
         return OrderResult(
@@ -62,8 +65,10 @@ class PaperExecutor:
             filled_avg_price=float(order.filled_avg_price or 0),
         )
 
-    async def market_order(self, symbol: str, side: str, qty: float) -> OrderResult:
-        return await asyncio.to_thread(self._submit_market_sync, symbol, side, qty)
+    async def market_order(
+        self, symbol: str, side: str, qty: float, tif: str = "gtc"
+    ) -> OrderResult:
+        return await asyncio.to_thread(self._submit_market_sync, symbol, side, qty, tif)
 
     async def poll_fill(
         self, order_id: str, attempts: int = 10, delay_s: float = 0.5
@@ -100,8 +105,34 @@ class PaperExecutor:
         return await asyncio.to_thread(fetch)
 
     async def flatten_all(self) -> None:
-        """Kill-switch: cancel open orders and close every position."""
+        """Kill-switch: cancel open orders and close every position.
+
+        ⚠ ACCOUNT-WIDE. The paper account is SHARED between the crypto pipeline
+        and the stocks paper trader — running strategies must use
+        flatten_symbols(their own symbols) or they will close each other's books.
+        """
         log.warning("flatten_all: closing all positions")
         await asyncio.to_thread(
             lambda: self._get_client().close_all_positions(cancel_orders=True)
         )
+
+    async def flatten_symbols(self, symbols: list[str]) -> None:
+        """Close only THIS strategy's positions (and cancel its open orders).
+        The account is shared across strategies, so account-wide close_all is
+        reserved for a human kill-switch."""
+        wanted = {s.replace("/", "") for s in symbols}
+
+        def run() -> None:
+            client = self._get_client()
+            for order in client.get_orders():  # default: open orders
+                if str(order.symbol).replace("/", "") in wanted:
+                    try:
+                        client.cancel_order_by_id(order.id)
+                    except Exception:  # noqa: BLE001 — already filled/cancelled is fine
+                        log.warning("cancel failed for %s", order.id, exc_info=True)
+            for pos in client.get_all_positions():
+                if str(pos.symbol).replace("/", "") in wanted:
+                    log.warning("flatten_symbols: closing %s", pos.symbol)
+                    client.close_position(pos.symbol)
+
+        await asyncio.to_thread(run)

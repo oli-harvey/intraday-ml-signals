@@ -366,12 +366,14 @@ class Pipeline:
         stage = IngestStage(self.source, queue)
         if self.executor is not None:
             if self.config.flatten_on_start:
-                # The local book starts empty, so any position on the account is
+                # The local book starts empty, so any position in OUR symbols is
                 # unmanaged residue (e.g. a killed process that never flattened —
                 # this happened: a soak died holding ETH for four days). Start
-                # from a known-flat account or PnL is unattributable.
+                # from known-flat in our own names or PnL is unattributable.
+                # Scoped, NOT flatten_all: the paper account is shared with the
+                # stocks paper trader — account-wide close would nuke its book.
                 with contextlib.suppress(Exception):
-                    await self.executor.flatten_all()
+                    await self.executor.flatten_symbols(self.config.symbols)
             self.equity = await self.executor.equity()
             print(f"paper equity: {self.equity:.2f}")
         started = time.monotonic()
@@ -400,7 +402,7 @@ class Pipeline:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.executor is not None and self.config.flatten_on_exit and self.book.open_count:
                 with contextlib.suppress(Exception):
-                    await self.executor.flatten_all()
+                    await self.executor.flatten_symbols(self.config.symbols)
             self._save_state()
             await self.store.flush()
             self.store.close()

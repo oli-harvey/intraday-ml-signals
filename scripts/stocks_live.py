@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -38,6 +39,7 @@ from signals.data.schema import MarketEvent, Quote
 from signals.features.engine import MICRO_FEATURES, FeatureConfig, FeatureEngine
 from signals.livesim import LiveSim
 from signals.model.online import OnlineModel
+from signals.stockstrader import StocksTrader
 from signals.storage.coldstore import ColdStore
 
 STATUS_PATH = "data/status_stocks.json"  # NOT status.json — that is the crypto pipeline's
@@ -77,6 +79,26 @@ async def main_async(args: argparse.Namespace) -> None:
     sim = _book(True)
     sim_pq = _book(False)
 
+    # Third measurement (2026-07-18, Oli's call): REAL paper orders. Entries at
+    # prediction time under the same simrule; every fill records its own
+    # frictionless-sim counterpart so the digest can print the reality gap.
+    trader: StocksTrader | None = None
+    if args.trade:
+        if args.replay:
+            raise SystemExit("--trade with --replay is forbidden (orders on old data)")
+        from signals.execution.alpaca_exec import PaperExecutor
+        trader = StocksTrader(
+            executor=PaperExecutor(load_alpaca_config()),
+            symbols=args.trade_symbols,
+            horizon_ns=horizon_ns,
+            dead_zone_bps=args.dead_zone_bps,
+            max_spread_bps=args.max_spread_bps,
+            notional=args.notional,
+            max_open=args.max_open,
+            daily_loss_cap_usd=args.daily_loss_cap,
+            allow_short=not args.long_only,
+        )
+
     store = ColdStore(args.db)
     queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=250_000)
     writer = asyncio.create_task(store.run(queue))
@@ -102,6 +124,8 @@ async def main_async(args: argparse.Namespace) -> None:
             "sim": sim.summary(),          # windowed (comparable to the digest)
             "sim_per_quote": sim_pq.summary(),  # every signal (the honest live rule)
         }
+        if trader is not None:
+            payload["paper"] = trader.summary()  # real fills, real slippage
         tmp = STATUS_PATH + ".tmp"
         try:
             with open(tmp, "w") as fh:
@@ -131,6 +155,8 @@ async def main_async(args: argparse.Namespace) -> None:
             if pipe is None or not isinstance(event, Quote):
                 continue
             step = pipe.on_event(event)
+            if trader is not None and step.prediction is not None:
+                trader.on_prediction(step.prediction)
             for r in step.resolved:
                 sim.on_resolved(event.symbol, r.ts_ns, r.prediction, r.realized, r.spread_bps)
                 sim_pq.on_resolved(event.symbol, r.ts_ns, r.prediction, r.realized, r.spread_bps)
@@ -151,15 +177,24 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
     finally:
         await source.close()
+        if trader is not None:
+            with contextlib.suppress(Exception):
+                await trader.close_all()  # settle in-flight, sweep OUR symbols only
         writer.cancel()
         await asyncio.gather(writer, return_exceptions=True)
         await store.flush()
         store.close()
         write_status()
     s, q = sim.summary(), sim_pq.summary()
+    paper = ""
+    if trader is not None:
+        t = trader.summary()
+        paper = (f" | PAPER {t['trades']}tr {t['avg_net_bps']:+.2f}bps "
+                 f"${t['pnl_usd']:+.2f} gap {t['sim_gap_bps']:+.2f}bps "
+                 f"errs {t['order_errors']}")
     print(f"done: {store.rows_written} rows -> {args.db} | "
           f"windowed {s['trades']}tr {s['avg_net_bps']:+.2f}bps | "
-          f"per-quote {q['trades']}tr {q['avg_net_bps']:+.2f}bps", flush=True)
+          f"per-quote {q['trades']}tr {q['avg_net_bps']:+.2f}bps{paper}", flush=True)
 
 
 def main() -> None:
@@ -177,6 +212,15 @@ def main() -> None:
     p.add_argument("--long-only", action="store_true",
                    help="no shorts (the tracked edge is short-dependent; this shows "
                         "what a cash account would actually capture)")
+    p.add_argument("--trade", action="store_true",
+                   help="place REAL paper orders for --trade-symbols (entries at "
+                        "prediction time, same simrule; refused with --replay)")
+    p.add_argument("--trade-symbols", nargs="+", default=["NVDA", "AAPL"])
+    p.add_argument("--notional", type=float, default=1_000.0,
+                   help="max $ per position; whole shares only (qty = notional // mid)")
+    p.add_argument("--max-open", type=int, default=2)
+    p.add_argument("--daily-loss-cap", type=float, default=25.0,
+                   help="realized $ loss that halts new entries for the session")
     args = p.parse_args()
     uvloop.install()
     asyncio.run(main_async(args))

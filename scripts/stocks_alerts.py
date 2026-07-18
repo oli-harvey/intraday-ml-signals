@@ -124,6 +124,7 @@ def read_status(root: Path) -> dict | None:
     sim = st.get("sim", {})
     pq = st.get("sim_per_quote", {})
     return {
+        "paper": st.get("paper"),  # real-fills book (present when --trade is on)
         "pq_trades": int(pq.get("trades", 0)),
         "pq_avg_bps": float(pq.get("avg_net_bps", float("nan"))),
         "up_s": int(st.get("uptime_s", 0)),
@@ -170,20 +171,34 @@ def trading_line(cur: dict) -> str:
     n = cur.get("trades", 0)
     pq_n = cur.get("pq_trades", 0)
     if not n and not pq_n:
-        return "trades 0 — no signal has cleared the spread gate yet"
-    top = sorted(cur.get("by_symbol", {}).items(),
-                 key=lambda kv: -kv[1].get("trades", 0))[:4]
-    names = " · ".join(f"{s} {d['trades']}@{d['avg_net_bps']:+.1f}" for s, d in top)
-    hit = cur.get("hit", float("nan"))
-    hit_s = f"{hit * 100:.0f}%" if hit == hit else "—"
-    pq_avg = cur.get("pq_avg_bps", float("nan"))
-    pq_s = f"{pq_avg:+.2f}" if pq_avg == pq_avg else "—"
-    return (
-        f"<b>{n} trades</b> (windowed) · net {cur['net_bps']:+.0f}bps "
-        f"(avg {cur['avg_bps']:+.2f}) · hit {hit_s}\n"
-        f"{names}\n"
-        f"per-quote: {pq_n} trades · avg {pq_s}bps ← the honest live rule"
-    )
+        body = "trades 0 — no signal has cleared the spread gate yet"
+    else:
+        top = sorted(cur.get("by_symbol", {}).items(),
+                     key=lambda kv: -kv[1].get("trades", 0))[:4]
+        names = " · ".join(f"{s} {d['trades']}@{d['avg_net_bps']:+.1f}" for s, d in top)
+        hit = cur.get("hit", float("nan"))
+        hit_s = f"{hit * 100:.0f}%" if hit == hit else "—"
+        pq_avg = cur.get("pq_avg_bps", float("nan"))
+        pq_s = f"{pq_avg:+.2f}" if pq_avg == pq_avg else "—"
+        body = (
+            f"<b>{n} trades</b> (windowed) · net {cur['net_bps']:+.0f}bps "
+            f"(avg {cur['avg_bps']:+.2f}) · hit {hit_s}\n"
+            f"{names}\n"
+            f"per-quote: {pq_n} trades · avg {pq_s}bps ← the honest live rule"
+        )
+    paper = cur.get("paper")
+    if paper:  # REAL paper orders are on — always show this book
+        avg = paper.get("avg_net_bps", float("nan"))
+        gap = paper.get("sim_gap_bps", float("nan"))
+        avg_s = f"{avg:+.2f}" if avg == avg else "—"
+        gap_s = f"{gap:+.2f}" if gap == gap else "—"
+        halt = " · ⛔ entries HALTED (loss cap)" if paper.get("halted") else ""
+        body += (
+            f"\n💵 <b>paper (real fills)</b>: {paper.get('trades', 0)} tr · "
+            f"avg {avg_s}bps · ${paper.get('pnl_usd', 0.0):+.2f} · "
+            f"vs-sim gap {gap_s}bps · errs {paper.get('order_errors', 0)}{halt}"
+        )
+    return body
 
 
 def db_size_mb(root: Path) -> float:
