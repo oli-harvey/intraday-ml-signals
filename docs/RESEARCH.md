@@ -977,7 +977,7 @@ assumption. This is not the tally being abandoned — the shadow books and night
 unchanged — it is a THIRD measurement of the same config added on top:
 
 `signals/stockstrader.py`, wired into stocks_live.py behind `--trade` (refused with
---replay). Enabled from Mon 2026-07-21 via run_equities_capture.sh:
+--replay). Enabled from Mon 2026-07-20 via run_equities_capture.sh:
 
 - **Entries at PREDICTION time** (the shadow book books at label-resolution — hindsight; a
   real trader acts on the forecast), same `simrule.decide` verbatim, windowed cadence (one
