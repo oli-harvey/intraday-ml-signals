@@ -73,14 +73,16 @@ def send(creds: dict[str, str], text: str) -> None:
 
 
 def account_line(root: Path) -> str:
-    """Paper-account balance from the crypto pipeline's status.json (one shared
-    Alpaca paper account; equities is capture-only, so this is the whole acct)."""
+    """Both virtual books of the ONE shared paper account (signals.books):
+    stocks = $50k + its own cumulative P&L, crypto = the remainder."""
+    from signals.books import crypto_balance, read_stocks_pnl, stocks_balance
     try:
         st = json.loads((root / "data" / "status.json").read_text())
         age = time.time() - st.get("ts", 0)
         fresh = "" if age < 600 else " ⚠stale"
-        return (f"paper acct ${st.get('equity', 0):,.0f} "
-                f"(today {st.get('pnl_today', 0.0):+.2f}){fresh}")
+        spnl = read_stocks_pnl(root)
+        return (f"stocks book ${stocks_balance(spnl):,.0f} · "
+                f"crypto book ${crypto_balance(st.get('equity', 0), spnl):,.0f}{fresh}")
     except (OSError, ValueError):
         return "paper acct n/a"
 

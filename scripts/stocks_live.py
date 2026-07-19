@@ -89,7 +89,7 @@ async def main_async(args: argparse.Namespace) -> None:
         from signals.execution.alpaca_exec import PaperExecutor
         trader = StocksTrader(
             executor=PaperExecutor(load_alpaca_config()),
-            symbols=args.trade_symbols,
+            symbols=args.trade_symbols,  # resolved to ALL captured by resolve_args
             horizon_ns=horizon_ns,
             dead_zone_bps=args.dead_zone_bps,
             max_spread_bps=args.max_spread_bps,
@@ -97,6 +97,7 @@ async def main_async(args: argparse.Namespace) -> None:
             max_open=args.max_open,
             daily_loss_cap_usd=args.daily_loss_cap,
             allow_short=not args.long_only,
+            book_root=".",  # persists the $50k stocks book (data/stocks_book.json)
         )
 
     store = ColdStore(args.db)
@@ -197,7 +198,7 @@ async def main_async(args: argparse.Namespace) -> None:
           f"per-quote {q['trades']}tr {q['avg_net_bps']:+.2f}bps{paper}", flush=True)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--symbols", nargs="+", required=True)
     p.add_argument("--duration", type=float, default=23_400)
@@ -215,13 +216,30 @@ def main() -> None:
     p.add_argument("--trade", action="store_true",
                    help="place REAL paper orders for --trade-symbols (entries at "
                         "prediction time, same simrule; refused with --replay)")
-    p.add_argument("--trade-symbols", nargs="+", default=["NVDA", "AAPL"])
+    p.add_argument("--trade-symbols", nargs="+", default=None,
+                   help="symbols eligible for real orders (default: ALL captured "
+                        "symbols — the simrule gate decides per-signal which are "
+                        "predicted profitable)")
     p.add_argument("--notional", type=float, default=1_000.0,
                    help="max $ per position; whole shares only (qty = notional // mid)")
     p.add_argument("--max-open", type=int, default=2)
     p.add_argument("--daily-loss-cap", type=float, default=25.0,
                    help="realized $ loss that halts new entries for the session")
-    args = p.parse_args()
+    return p
+
+
+def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Post-parse resolution, split out so tests can pin it (a silently no-opped
+    CLI wiring has bitten this repo before)."""
+    if args.trade_symbols is None:
+        # "predicted profitable" is simrule's per-signal call across the whole
+        # captured universe, not a hand-picked list (2026-07-19, Oli)
+        args.trade_symbols = args.symbols
+    return args
+
+
+def main() -> None:
+    args = resolve_args(build_parser().parse_args())
     uvloop.install()
     asyncio.run(main_async(args))
 

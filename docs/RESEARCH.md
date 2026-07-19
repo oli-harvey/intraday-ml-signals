@@ -996,3 +996,15 @@ unchanged — it is a THIRD measurement of the same config added on top:
 Success/failure reads the same as ever, now with real fills: paper avg net per trade vs the
 shadow book's, and sim_gap_bps ≈ 0 (cost model honest) vs strongly negative (the sim was
 flattering us — which would retro-taint every prior number and be a finding in itself).
+
+**2026-07-19 amendments (Oli):** (1) *"not just NVDA and AAPL, any stocks that are predicted
+to be profitable"* — the trade universe defaults to ALL captured symbols; which signals are
+"predicted profitable" is simrule's per-signal call (dead zone + spread gate), not a
+hand-picked list. Caps rescaled: max 6 open (order rate stays well under Alpaca's 200/min),
+$50/day loss halt. (2) *Split the paper funds*: the one $100k account is virtually divided
+(`signals/books.py`) — **stocks book = $50k + its own cumulative P&L** (persisted
+`data/stocks_book.json`, written per exit), **crypto book = account equity − stocks book**,
+so the small pre-split loss (~$70) is attributed to crypto and the stocks book opens at
+exactly $50k. Invariant by construction: books sum to account equity. All bot messages now
+report per-book: crypto trade alerts + daily show the crypto book, stocks heartbeats/close +
+nightly digest show the stocks book.

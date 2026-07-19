@@ -29,7 +29,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from . import simrule
+from . import books, simrule
 from .core import Prediction
 from .execution.alpaca_exec import PaperExecutor
 
@@ -58,6 +58,7 @@ class StocksTrader:
     max_open: int = 2
     daily_loss_cap_usd: float = 25.0
     allow_short: bool = True
+    book_root: str | None = None  # persist the $50k stocks book here (None: off)
 
     open_pos: dict[str, OpenPosition] = field(default_factory=dict)
     pending: set[str] = field(default_factory=set)  # symbols with in-flight orders
@@ -68,7 +69,12 @@ class StocksTrader:
     orders: int = 0
     order_errors: int = 0
     halted: bool = False
+    book_pnl_cum: float = 0.0  # lifetime stocks-book P&L (loaded across sessions)
     _tasks: set = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if self.book_root is not None:
+            self.book_pnl_cum = books.read_stocks_pnl(self.book_root)
 
     # ---- hot path -----------------------------------------------------------
     def on_prediction(self, p: Prediction) -> None:
@@ -146,6 +152,9 @@ class StocksTrader:
         sim_net = (pos.side * (mid_now - pos.signal_mid) / pos.signal_mid * 1e4
                    - pos.signal_spread_bps)
         self.realized_usd += pnl_usd
+        self.book_pnl_cum += pnl_usd
+        if self.book_root is not None:
+            books.write_stocks_pnl(self.book_pnl_cum, self.book_root)
         self.trades.append({
             "symbol": sym, "ts_ns": pos.entry_ns,
             "side": "long" if pos.side > 0 else "short", "qty": pos.qty,
@@ -182,6 +191,8 @@ class StocksTrader:
             "wins": sum(1 for x in nets if x > 0),
             "avg_net_bps": (sum(nets) / n) if n else float("nan"),
             "pnl_usd": self.realized_usd,
+            "balance": books.stocks_balance(self.book_pnl_cum),  # the $50k book
+            "pnl_cum": self.book_pnl_cum,
             # negative gap = reality pays more toll than the sim charges
             "sim_gap_bps": (sum(gaps) / n) if n else float("nan"),
             "orders": self.orders,

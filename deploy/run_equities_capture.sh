@@ -44,11 +44,13 @@ ls -1t data/equities_2*.duckdb 2>/dev/null | tail -n +31 | xargs -r rm -f
 dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wait — skip"; exit 0; }
 # stocks_live.py = record.py's capture (identical quotes -> identical DuckDB) PLUS the
 # tracked model running live on the same websocket, booking a shadow trading book,
-# PLUS (since 2026-07-18, Oli's call) REAL PAPER ORDERS on the tracked names:
-# NVDA/AAPL, $1000 max/position (whole shares), 2 open max, $25 daily loss cap,
-# EOD flatten scoped to its own symbols (the paper account is shared with crypto).
-# Paper money only; the point is measuring real fills vs the sim's cost model.
+# PLUS (since 2026-07-18/19, Oli's call) REAL PAPER ORDERS across the WHOLE captured
+# universe — which signals are "predicted profitable" is simrule's per-signal call
+# (dead zone + spread gate), not a hand-picked list. $1000 max/position (whole
+# shares), 6 open max (order rate stays well under Alpaca's 200/min), $50 daily
+# loss cap, EOD flatten scoped to its own symbols (the account is shared with
+# crypto). Paper money only; the point is real fills vs the sim's cost model.
 exec .venv/bin/python scripts/stocks_live.py \
   --symbols $SYMBOLS --duration "$dur" --db "$db" \
   --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2 \
-  --trade --trade-symbols NVDA AAPL --notional 1000 --max-open 2 --daily-loss-cap 25
+  --trade --notional 1000 --max-open 6 --daily-loss-cap 50

@@ -142,6 +142,25 @@ def test_close_all_halts_and_sweeps_only_own_symbols():
     assert tr.halted
 
 
+def test_cli_trade_universe_defaults_to_all_captured_symbols():
+    """2026-07-19 (Oli): 'not just nvda and aapl, any stocks that are predicted
+    to be profitable' — the default trade universe is the whole capture list;
+    simrule picks per-signal. Pin the CLI resolution (silent no-op wiring has
+    bitten this repo before)."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from stocks_live import build_parser, resolve_args
+
+    args = resolve_args(build_parser().parse_args(
+        ["--symbols", "SPY", "NVDA", "F", "--trade"]))
+    assert args.trade_symbols == ["SPY", "NVDA", "F"]
+    # an explicit list still wins
+    args = resolve_args(build_parser().parse_args(
+        ["--symbols", "SPY", "NVDA", "F", "--trade", "--trade-symbols", "NVDA"]))
+    assert args.trade_symbols == ["NVDA"]
+
+
 def test_summary_reports_reality_gap():
     async def go():
         ex = FakeExecutor([900.10, 900.55])

@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from signals.books import crypto_balance, read_stocks_pnl, stocks_balance
+
 
 def load_env(path: str) -> dict[str, str]:
     out = {}
@@ -30,8 +32,10 @@ def load_env(path: str) -> dict[str, str]:
 
 
 def holdings_line(cur: dict) -> str:
-    """Balance + what is actually held right now — appended to every trade alert
-    so a buy/sell message answers 'and where does that leave me?' by itself."""
+    """CRYPTO book balance + what is actually held right now — appended to every
+    trade alert so a buy/sell message answers 'and where does that leave me?' by
+    itself. The paper account is virtually split 50/50 crypto/stocks (signals.
+    books); crypto messages report the crypto book, not the whole account."""
     pos = cur.get("positions") or {}
     if pos:
         held = ", ".join(
@@ -40,7 +44,8 @@ def holdings_line(cur: dict) -> str:
         )
     else:
         held = "none"
-    return f"bal ${cur.get('equity', 0):,.0f} · holdings: {held}"
+    bal = cur.get("crypto_book", cur.get("equity", 0))
+    return f"crypto book ${bal:,.0f} · holdings: {held}"
 
 
 def detect_alerts(prev: dict, cur: dict) -> list[str]:
@@ -115,6 +120,10 @@ def main() -> None:
     except (OSError, ValueError):
         prev = {}
 
+    spnl = read_stocks_pnl(root)
+    cur["crypto_book"] = crypto_balance(cur["equity"], spnl)
+    cur["stocks_book"] = stocks_balance(spnl)
+
     if args.daily:
         per_sym = status.get("per_symbol", {})
         learned = sum(m.get("n", 0) for m in per_sym.values())
@@ -122,7 +131,9 @@ def main() -> None:
             creds,
             f"daily: {cur['fresh'].upper()} · pnl ${cur['pnl']:+.2f}"
             f" · orders {cur['orders']} · {learned:,.0f} samples learned"
-            f" · equity ${status.get('equity', 0):,.0f}",
+            f" · crypto book ${cur['crypto_book']:,.0f}"
+            f" · stocks book ${cur['stocks_book']:,.0f}"
+            f" (acct ${status.get('equity', 0):,.0f})",
         )
     else:
         for alert in detect_alerts(prev, cur):

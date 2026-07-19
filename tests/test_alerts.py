@@ -37,22 +37,24 @@ def test_new_trade_alert_includes_details() -> None:
     assert len(alerts) == 1 and "BTC/USD" in alerts[0] and "buy" in alerts[0]
 
 
-def test_trade_alert_reports_balance_and_holdings() -> None:
-    """Every buy/sell message must answer 'and where does that leave me?'"""
-    cur = dict(BASE, orders=1,
+def test_trade_alert_reports_crypto_book_and_holdings() -> None:
+    """Every buy/sell message must answer 'and where does that leave me?' —
+    reporting the CRYPTO book (the account is virtually split with stocks)."""
+    cur = dict(BASE, orders=1, crypto_book=49_930.0,
                last_order={"side": "buy", "qty": 6.71, "symbol": "SOL/USD",
                            "price": 74.46, "note": "enter long"},
                positions={"SOL/USD": {"qty": 6.71, "entry": 74.462},
                           "BTC/USD": {"qty": 0.0016, "entry": 61_250.0}})
     (msg,) = detect_alerts(dict(BASE), cur)
-    assert "bal $99,930" in msg
+    assert "crypto book $49,930" in msg
     assert "6.71 SOL @ $74.46" in msg
     assert "0.0016 BTC @ $61,250.00" in msg
 
 
 def test_holdings_line_when_flat() -> None:
-    assert holdings_line(dict(BASE)) == "bal $99,930 · holdings: none"
-    # status.json from a pre-restart pipeline has no positions key at all
+    assert holdings_line(dict(BASE, crypto_book=49_930.0)) \
+        == "crypto book $49,930 · holdings: none"
+    # no split-book info at all (old status) -> falls back to account equity
     assert "holdings: none" in holdings_line({"equity": 5.0})
 
 
