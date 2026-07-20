@@ -33,6 +33,84 @@ SERIES = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e8
 HISTORY_KEEP = 20_000  # ~2 weeks at 1/min
 HISTORY_PRUNE_AT = 30_000
 
+# Shared page shell — ONE visual language for every Telegram Web App / browser
+# dashboard this project serves (crypto here, stocks in gen_stocks_app.py), so
+# "which bot sent this" never means "which CSS am I looking at today". The
+# telegram-web-app.js include + the tiny init script are what make the page
+# feel native inside Telegram's in-app webview (matches the user's real theme
+# via colorScheme/themeParams) rather than a website that happens to load
+# there — that native feel, opened by one button tap, is the actual ceiling of
+# what Telegram allows for an "interactive chart in Telegram": there is no
+# surface for a live widget to sit directly in the message feed, un-tapped.
+_STYLE = """
+:root { --bg:#fcfcfb; --ink:#1a1a19; --muted:#6b6b68; --card:#ffffff; --line:#e5e5e2; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#1a1a19; --ink:#f2f2ef; --muted:#a3a39e; --card:#242422; --line:#3a3a37; }
+}
+* { box-sizing:border-box; margin:0; }
+body { font:16px/1.45 -apple-system,system-ui,sans-serif; background:var(--bg);
+       color:var(--ink); padding:16px; max-width:640px; margin:0 auto; }
+h1 { font-size:1.15rem; margin-bottom:2px; }
+.fresh { font-weight:600; margin-bottom:16px; }
+.grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+.tile { background:var(--card); border:1px solid var(--line); border-radius:10px;
+        padding:12px; }
+.lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+       color:var(--muted); }
+.val { font-size:1.45rem; font-weight:650; margin:2px 0; font-variant-numeric:tabular-nums; }
+.sub { font-size:.75rem; color:var(--muted); }
+h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em;
+     color:var(--muted); margin:20px 0 8px; }
+.banner { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:12px; font-size:.85rem; }
+.chart { background:var(--card); border:1px solid var(--line); border-radius:10px;
+         padding:12px 6px 6px; }
+.scatter-row { display:flex; flex-wrap:wrap; gap:10px; }
+.scatter { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:8px; flex:1 1 150px; max-width:200px; }
+.axis { font:11px -apple-system,system-ui,sans-serif; fill:var(--muted); }
+table { width:100%; border-collapse:collapse; background:var(--card);
+        border:1px solid var(--line); border-radius:10px; overflow:hidden;
+        font-size:.8rem; }
+td { padding:7px 10px; border-top:1px solid var(--line); }
+tr:first-child td { border-top:none; color:var(--muted); font-size:.72rem;
+                    text-transform:uppercase; letter-spacing:.04em; }
+.num { text-align:right; font-variant-numeric:tabular-nums; }
+footer { margin-top:18px; font-size:.72rem; color:var(--muted); }
+"""
+
+_TELEGRAM_INIT = """
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+if (window.Telegram && Telegram.WebApp) {
+  const tg = Telegram.WebApp;
+  tg.ready(); tg.expand();
+  const p = tg.themeParams || {};
+  const r = document.documentElement.style;
+  if (p.bg_color) r.setProperty('--bg', '#' + p.bg_color.replace('#',''));
+  if (p.text_color) r.setProperty('--ink', '#' + p.text_color.replace('#',''));
+  if (p.hint_color) r.setProperty('--muted', '#' + p.hint_color.replace('#',''));
+  if (p.secondary_bg_color) r.setProperty('--card', '#' + p.secondary_bg_color.replace('#',''));
+}
+</script>
+"""
+
+
+def page_shell(title: str, body: str, refresh_s: int = 60) -> str:
+    """One HTML skeleton for every dashboard this project serves — Telegram
+    Web App aware (falls back to plain OS light/dark CSS when opened in a
+    normal browser, e.g. via the /stats/ basic-auth route)."""
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{refresh_s}">
+<title>{html.escape(title)}</title>
+{_TELEGRAM_INIT}
+<style>{_STYLE}</style></head><body>
+{body}
+</body></html>"""
+
 
 def load_status(path: Path) -> tuple[dict, str, str]:
     try:
@@ -372,49 +450,7 @@ def render(root: Path) -> str:
     generated = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     tiles_html = "".join(tiles) or '<div class="tile"><div class="val">no status</div></div>'
     equity_now = f"${status.get('equity', 0):,.2f}" if status else "–"
-    return f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
-<title>intraday paper trading</title>
-<style>
-:root {{ --bg:#fcfcfb; --ink:#1a1a19; --muted:#6b6b68; --card:#ffffff; --line:#e5e5e2; }}
-@media (prefers-color-scheme: dark) {{
-  :root {{ --bg:#1a1a19; --ink:#f2f2ef; --muted:#a3a39e; --card:#242422; --line:#3a3a37; }}
-}}
-* {{ box-sizing:border-box; margin:0; }}
-body {{ font:16px/1.45 -apple-system,system-ui,sans-serif; background:var(--bg);
-       color:var(--ink); padding:16px; max-width:640px; margin:0 auto; }}
-h1 {{ font-size:1.15rem; margin-bottom:2px; }}
-.fresh {{ font-weight:600; margin-bottom:16px; }}
-.grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }}
-.tile {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-         padding:12px; }}
-.lbl {{ font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
-        color:var(--muted); }}
-.val {{ font-size:1.45rem; font-weight:650; margin:2px 0; font-variant-numeric:tabular-nums; }}
-.sub {{ font-size:.75rem; color:var(--muted); }}
-h2 {{ font-size:.85rem; text-transform:uppercase; letter-spacing:.04em;
-      color:var(--muted); margin:20px 0 8px; }}
-.banner {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-           padding:12px; font-size:.85rem; }}
-.chart {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-          padding:12px 6px 6px; }}
-.scatter-row {{ display:flex; flex-wrap:wrap; gap:10px; }}
-.scatter {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-           padding:8px; flex:1 1 150px; max-width:200px; }}
-.axis {{ font:11px -apple-system,system-ui,sans-serif; fill:var(--muted); }}
-table {{ width:100%; border-collapse:collapse; background:var(--card);
-         border:1px solid var(--line); border-radius:10px; overflow:hidden;
-         font-size:.8rem; }}
-td {{ padding:7px 10px; border-top:1px solid var(--line); }}
-tr:first-child td {{ border-top:none; color:var(--muted); font-size:.72rem;
-                     text-transform:uppercase; letter-spacing:.04em; }}
-.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
-footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
-</style></head><body>
-<h1>intraday paper trading</h1>
+    body = f"""<h1>crypto paper trading</h1>
 <div class="fresh" style="color:{colors[fresh_key]}">{icons[fresh_key]} {fresh_label}</div>
 <div class="grid">{tiles_html}</div>
 
@@ -433,7 +469,7 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
 <h2>rolling MAE edge vs zero baseline</h2>
 <div class="chart">{svg_chart(edge_series, value_format="{:+.1f}%")}</div>
 
-<h2>orders (crypto pipeline — the only experiment that trades)</h2>
+<h2>orders (this pipeline)</h2>
 {orders_section(status)}
 
 <h2>all experiments</h2>
@@ -441,8 +477,8 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
 <tr><td>experiment</td><td>where</td><td>trades?</td></tr>
 <tr><td>crypto paper pipeline (BTC+ETH, classifier)</td><td>server, 24/7</td>
 <td>yes — paper</td></tr>
-<tr><td>equities capture (SPY/AAPL/NVDA)</td><td>server cron, weekdays 14:30 UTC</td>
-<td>no — data only</td></tr>
+<tr><td>equities (30 symbols, no-micro EV)</td><td>server cron, weekdays 09:30-16:00 ET</td>
+<td>yes — real paper orders (see the stocks dashboard)</td></tr>
 <tr><td>cross-venue &amp; research replays</td><td>offline (Mac), on recorded data</td>
 <td>no — simulation</td></tr>
 </table>
@@ -458,8 +494,8 @@ footer {{ margin-top:18px; font-size:.72rem; color:var(--muted); }}
  of {disk.total / 1e9:.0f} GB</td></tr>
 </table>
 <footer>generated {generated} · auto-refreshes every 60s ·
-read-only monitor; control plane comes later</footer>
-</body></html>"""
+read-only monitor; control plane comes later</footer>"""
+    return page_shell("crypto paper trading", body)
 
 
 def main() -> None:
