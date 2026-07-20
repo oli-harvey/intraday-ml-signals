@@ -179,13 +179,44 @@ class StocksTrader:
                 task.cancel()
             if still_running:
                 await asyncio.gather(*still_running, return_exceptions=True)
-        await self.executor.flatten_symbols(self.symbols)
+        closed = await self.executor.flatten_symbols(self.symbols)
+        self._record_reconciliation_closes(closed)
+
+    def _record_reconciliation_closes(self, closed: list[dict]) -> None:
+        """flatten_symbols() closes via a raw broker call that bypasses
+        _round_trip/_exit entirely — without this, a stranded position (e.g. an
+        exit whose fill never confirmed) would vanish from the book with no
+        trade record at all (the crypto pipeline had exactly this bug: an ETH
+        position closed at restart with no sell alert). Booked with real P&L,
+        excluded from the strategy performance averages (net_bps/sim_gap) since
+        there is no signal/sim counterpart for an orphaned position."""
+        for c in closed:
+            pnl = c["unrealized_pl"]
+            qty, entry = c["qty"], c["avg_entry_price"]
+            self.realized_usd += pnl
+            self.book_pnl_cum += pnl
+            if self.book_root is not None:
+                books.write_stocks_pnl(self.book_pnl_cum, self.book_root)
+            self.trades.append({
+                "symbol": c["symbol"], "ts_ns": 0,
+                "side": "long" if qty > 0 else "short", "qty": abs(qty),
+                "pred_bps": float("nan"), "entry_fill": entry,
+                "exit_fill": float("nan"),
+                "net_bps": (pnl / (abs(qty) * entry) * 1e4) if qty and entry else float("nan"),
+                "pnl_usd": pnl, "sim_net_bps": float("nan"),
+                "spread_bps": float("nan"), "reconciliation": True,
+            })
 
     # ---- reporting ----------------------------------------------------------
     def summary(self) -> dict:
-        n = len(self.trades)
-        nets = [t["net_bps"] for t in self.trades]
-        gaps = [t["net_bps"] - t["sim_net_bps"] for t in self.trades]
+        # reconciliation closes carry real P&L (folded into balance/cash below)
+        # but have no signal/sim counterpart, so they're excluded from the
+        # strategy's own performance averages — one orphaned position must not
+        # silently move avg_net_bps or sim_gap_bps.
+        real = [t for t in self.trades if not t.get("reconciliation")]
+        n = len(real)
+        nets = [t["net_bps"] for t in real]
+        gaps = [t["net_bps"] - t["sim_net_bps"] for t in real]
         balance = books.stocks_balance(self.book_pnl_cum)  # the $50k book
 
         # open positions MARKED TO the latest quote (self.last_mid), so the book
@@ -217,8 +248,9 @@ class StocksTrader:
             "sim_gap_bps": (sum(gaps) / n) if n else float("nan"),
             "orders": self.orders,
             "order_errors": self.order_errors,
+            "reconciliations": len(self.trades) - n,  # stranded closes, see note above
             "halted": self.halted,
             "open": sorted(self.open_pos),
             "open_detail": open_detail,
-            "recent": self.trades[-10:],
+            "recent": self.trades[-10:],  # includes reconciliation entries — visible
         }

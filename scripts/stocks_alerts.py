@@ -193,10 +193,12 @@ def trading_line(cur: dict) -> str:
         avg_s = f"{avg:+.2f}" if avg == avg else "—"
         gap_s = f"{gap:+.2f}" if gap == gap else "—"
         halt = " · ⛔ entries HALTED (loss cap)" if paper.get("halted") else ""
+        recon = paper.get("reconciliations", 0)
+        recon_s = f" · ⚠ {recon} reconciliation close(s)" if recon else ""
         body += (
             f"\n💵 <b>paper (real fills)</b>: {paper.get('trades', 0)} tr · "
             f"avg {avg_s}bps · ${paper.get('pnl_usd', 0.0):+.2f} · "
-            f"vs-sim gap {gap_s}bps · errs {paper.get('order_errors', 0)}{halt}"
+            f"vs-sim gap {gap_s}bps · errs {paper.get('order_errors', 0)}{halt}{recon_s}"
         )
         body += f"\n{stocks_book_line(paper)}"
     return body

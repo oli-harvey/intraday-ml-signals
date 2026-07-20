@@ -175,6 +175,26 @@ class Pipeline:
             self.tap_dropped += 1
 
     # ---- order path (off the critical loop) ----
+    def _record_reconciliation_closes(self, closed: list[dict]) -> None:
+        """Make a flatten_symbols() close VISIBLE — it bypasses market_order()/
+        _execute() entirely (a raw broker close), so without this it never
+        touches orders_submitted/_recent_orders and every alert that watches
+        those stays silent. This is the fix for the ETH position that vanished
+        from the holdings line with no sell alert: it WAS sold, but nothing
+        downstream of the broker call ever recorded it."""
+        for c in closed:
+            self.orders_submitted += 1
+            self._recent_orders.append({
+                "ts": time.time(),
+                "symbol": c["symbol"],
+                "side": "sell" if c["qty"] > 0 else "buy",
+                "qty": abs(c["qty"]),
+                "price": c["avg_entry_price"],
+                "status": "filled",
+                "note": (f"RECONCILIATION close (unmanaged residue, not a "
+                         f"strategy signal) — mv ${c['market_value']:+.2f}"),
+            })
+
     async def _execute(self, intent: OrderIntent) -> None:
         assert self.executor is not None
         try:
@@ -383,7 +403,8 @@ class Pipeline:
                 # Scoped, NOT flatten_all: the paper account is shared with the
                 # stocks paper trader — account-wide close would nuke its book.
                 with contextlib.suppress(Exception):
-                    await self.executor.flatten_symbols(self.config.symbols)
+                    closed = await self.executor.flatten_symbols(self.config.symbols)
+                    self._record_reconciliation_closes(closed)
             snap = await self.executor.account()
             self.equity, self.cash = snap.equity, snap.cash
             print(f"paper equity: {self.equity:.2f}")
@@ -413,7 +434,14 @@ class Pipeline:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.executor is not None and self.config.flatten_on_exit and self.book.open_count:
                 with contextlib.suppress(Exception):
-                    await self.executor.flatten_symbols(self.config.symbols)
+                    closed = await self.executor.flatten_symbols(self.config.symbols)
+                    self._record_reconciliation_closes(closed)
+                    if closed:
+                        # the status loop task is already cancelled — write once
+                        # more so this close isn't silently lost at shutdown
+                        lat = np.array(self._proc_us) if self._proc_us else np.array([0.0])
+                        metrics = {s: p.model.metrics() for s, p in self.pipes.items()}
+                        self._write_status(stage, started, lat, metrics)
             self._save_state()
             await self.store.flush()
             self.store.close()

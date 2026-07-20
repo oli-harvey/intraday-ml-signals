@@ -18,10 +18,11 @@ HN = 40_000_000  # 40ms horizon: real holds, fast tests
 class FakeExecutor:
     """Fills every market order instantly at a scripted price."""
 
-    def __init__(self, prices: list[float]):
+    def __init__(self, prices: list[float], stranded: list[dict] | None = None):
         self.prices = list(prices)
         self.orders: list[tuple[str, str, float, str]] = []
         self.flattened: list[list[str]] | None = None
+        self._stranded = stranded or []  # what flatten_symbols() reports closed
         self._i = 0
 
     async def market_order(self, symbol, side, qty, tif="gtc"):
@@ -36,6 +37,7 @@ class FakeExecutor:
 
     async def flatten_symbols(self, symbols):
         self.flattened = (self.flattened or []) + [list(symbols)]
+        return self._stranded
 
 
 def pred(sym="NVDA", ts=0, predicted=0.0010, mid=900.0, spread=1.0):
@@ -140,6 +142,35 @@ def test_close_all_halts_and_sweeps_only_own_symbols():
     ex, tr = run(go())
     assert ex.flattened == [["NVDA", "AAPL"]]  # never account-wide
     assert tr.halted
+
+
+def test_close_all_records_a_stranded_position_as_a_visible_reconciliation():
+    """A stranded position (e.g. an exit whose fill never confirmed) closed by
+    the EOD sweep must show up with real P&L — not vanish silently the way the
+    crypto pipeline's ETH position once did."""
+    async def go():
+        ex = FakeExecutor([], stranded=[
+            {"symbol": "AAPL", "qty": -3.0, "avg_entry_price": 200.0,
+             "market_value": -597.0, "unrealized_pl": -3.0},
+        ])
+        tr = make(ex)
+        await tr.close_all()
+        return tr
+    tr = run(go())
+    (t,) = tr.trades
+    assert t["reconciliation"] is True
+    assert t["symbol"] == "AAPL" and t["side"] == "short" and t["qty"] == 3.0
+    assert t["pnl_usd"] == -3.0
+    assert abs(t["net_bps"] - (-3.0 / (3.0 * 200.0) * 1e4)) < 1e-9
+    assert tr.book_pnl_cum == -3.0
+
+    s = tr.summary()
+    # excluded from the strategy's own performance averages...
+    assert s["trades"] == 0 and s["avg_net_bps"] != s["avg_net_bps"]  # NaN
+    assert s["reconciliations"] == 1
+    # ...but the money is real and folded into the book
+    assert abs(s["balance"] - (50_000.0 - 3.0)) < 1e-9
+    assert abs(s["pnl_usd"] - (-3.0)) < 1e-9
 
 
 def test_cli_trade_universe_defaults_to_all_captured_symbols():

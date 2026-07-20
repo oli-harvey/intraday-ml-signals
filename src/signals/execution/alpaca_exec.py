@@ -131,13 +131,22 @@ class PaperExecutor:
             lambda: self._get_client().close_all_positions(cancel_orders=True)
         )
 
-    async def flatten_symbols(self, symbols: list[str]) -> None:
+    async def flatten_symbols(self, symbols: list[str]) -> list[dict]:
         """Close only THIS strategy's positions (and cancel its open orders).
         The account is shared across strategies, so account-wide close_all is
-        reserved for a human kill-switch."""
+        reserved for a human kill-switch.
+
+        Returns what was closed (symbol, qty, avg_entry_price, market_value at
+        the moment of closing) — client.close_position() is a raw broker call
+        that bypasses market_order()/poll_fill() entirely, so without this
+        return value a reconciliation close is INVISIBLE to every alert path
+        that watches orders_submitted/_recent_orders. That happened: an ETH
+        position was closed by a startup flatten and just vanished from the
+        Telegram holdings line with no sell alert. Callers must use this to
+        make the close visible."""
         wanted = {s.replace("/", "") for s in symbols}
 
-        def run() -> None:
+        def run() -> list[dict]:
             client = self._get_client()
             for order in client.get_orders():  # default: open orders
                 if str(order.symbol).replace("/", "") in wanted:
@@ -145,9 +154,18 @@ class PaperExecutor:
                         client.cancel_order_by_id(order.id)
                     except Exception:  # noqa: BLE001 — already filled/cancelled is fine
                         log.warning("cancel failed for %s", order.id, exc_info=True)
+            closed = []
             for pos in client.get_all_positions():
                 if str(pos.symbol).replace("/", "") in wanted:
                     log.warning("flatten_symbols: closing %s", pos.symbol)
+                    closed.append({
+                        "symbol": str(pos.symbol),
+                        "qty": float(pos.qty),
+                        "avg_entry_price": float(pos.avg_entry_price),
+                        "market_value": float(pos.market_value),
+                        "unrealized_pl": float(pos.unrealized_pl),
+                    })
                     client.close_position(pos.symbol)
+            return closed
 
-        await asyncio.to_thread(run)
+        return await asyncio.to_thread(run)
