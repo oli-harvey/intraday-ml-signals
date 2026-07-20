@@ -25,7 +25,9 @@ import datetime as dt
 import glob
 import json
 import statistics as stats
+import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -468,7 +470,15 @@ def main() -> None:
     if args.no_send:
         print(msg)
     else:
-        send(load_env(args.env), msg)
+        # A send failure (Telegram outage, transient network error) must not
+        # cost the session a row in the rolling tally — the digest only scores
+        # the LATEST db, so a lost row here silently creates a permanent gap
+        # until someone notices and re-runs --backfill by hand.
+        try:
+            send(load_env(args.env), msg)
+        except Exception:
+            print(f"SEND FAILED for {day} (history still recorded):", file=sys.stderr)
+            traceback.print_exc()
 
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a") as fh:

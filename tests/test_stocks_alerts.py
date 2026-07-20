@@ -72,6 +72,26 @@ def test_session_open_announced_once():
     assert detect(_state(), _state(events=2000, rows=1990)) == []
 
 
+def test_session_open_escapes_the_config_string():
+    """2026-07-20: config carries a literal '<' ('spread<2bp'). Telegram's HTML
+    parser reads '<2bp' as a broken start tag and 400s the WHOLE message — and
+    because that exception used to propagate out of main() before the state
+    file was written, the cron retried and failed on this exact message every
+    5 minutes for hours (184 identical crashes, zero stocks messages sent).
+    The config string MUST be HTML-escaped before it reaches a <b>...</b>
+    message sent with parse_mode=HTML."""
+    (msg,) = detect({"state": "closed"}, _state(config="ev no-micro 5s dz4 spread<2bp"))
+    assert "spread&lt;2bp" in msg
+    assert "spread<2bp" not in msg  # the raw, Telegram-breaking form must be gone
+
+
+def test_session_open_reports_real_orders_when_trading_is_on():
+    msgs = detect({"state": "closed"}, _state(paper={"trades": 0}))
+    assert any("REAL paper orders" in m for m in msgs)
+    msgs = detect({"state": "closed"}, _state())  # no paper key -> shadow only
+    assert any("no real orders" in m for m in msgs)
+
+
 def test_writer_stall_fires_the_alarm():
     """The 07-13 failure: events climb, rows frozen."""
     prev = _state(events=8_600_000, rows=8_631_663)

@@ -29,10 +29,13 @@ Cron (MERGE), every 5 min on weekdays; it no-ops outside market hours:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import subprocess
+import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import zoneinfo
@@ -245,9 +248,18 @@ def detect(prev: dict, cur: dict) -> list[str]:
     was, now = prev.get("state"), cur["state"]
 
     if now == "open" and was in (None, "closed"):
+        # html.escape is NOT optional: config carries a literal '<' (e.g.
+        # "spread<2bp") and Telegram's HTML parser reads "<2bp" as a broken
+        # start tag, 400s the WHOLE message, and — because that exception
+        # propagates out of main() before the state file is written — the
+        # transition never gets marked "open", so the cron retries and fails
+        # on this exact message every 5 minutes forever. This happened: 184
+        # identical crashes, zero stocks messages sent, the whole morning.
+        cfg = html.escape(cur.get("config", ""))
+        orders_note = "no real orders" if not cur.get("paper") else "REAL paper orders"
         out.append(
             f"📈 <b>stocks session open</b> — 30 symbols streaming\n"
-            f"shadow book: {cur.get('config', '')} (no real orders)"
+            f"shadow book: {cfg} ({orders_note})"
         )
     elif now == "closed" and was in ("open", "down", "stalled"):
         out.append(
@@ -353,8 +365,21 @@ def main() -> None:
             print(f"{now:%H:%M} {state}: no alerts")
         return
 
+    # A send failure must NEVER block the state write below — this is the exact
+    # bug that just caused 184 identical crashes and zero stocks messages for
+    # hours: one malformed message 400'd, the exception propagated out of
+    # main(), the state file never updated, so the same transition (and the
+    # same bad message) retried and failed every 5 minutes indefinitely. One
+    # bad message is now a logged miss, not a stuck alarm.
+    creds = load_env(args.env)
     for m in msgs:
-        send(load_env(args.env), m)
+        try:
+            send(creds, m)
+        except Exception:
+            print(f"{now:%H:%M} SEND FAILED (message dropped, state still advances):",
+                  file=sys.stderr)
+            print(m, file=sys.stderr)
+            traceback.print_exc()
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(cur))

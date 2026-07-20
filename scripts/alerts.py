@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -134,11 +136,22 @@ def main() -> None:
     cur["crypto_book"] = crypto_balance(cur["equity"], spnl)
     cur["stocks_book"] = stocks_balance(spnl)
 
+    # A send failure must never block the state write below (stocks_alerts.py
+    # hit exactly this: one malformed message 400'd, aborted main() before the
+    # state file updated, and the cron re-failed on the same message every 5
+    # minutes for hours). One bad message is now a logged miss, not a stuck alarm.
+    def safe_send(text: str) -> None:
+        try:
+            send(creds, text)
+        except Exception:
+            print("SEND FAILED (message dropped, state still advances):", file=sys.stderr)
+            print(text, file=sys.stderr)
+            traceback.print_exc()
+
     if args.daily:
         per_sym = status.get("per_symbol", {})
         learned = sum(m.get("n", 0) for m in per_sym.values())
-        send(
-            creds,
+        safe_send(
             f"daily: {cur['fresh'].upper()} · pnl ${cur['pnl']:+.2f}"
             f" · orders {cur['orders']} · {learned:,.0f} samples learned\n"
             f"{holdings_line(cur)}\n"
@@ -147,7 +160,7 @@ def main() -> None:
         )
     else:
         for alert in detect_alerts(prev, cur):
-            send(creds, alert)
+            safe_send(alert)
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(cur))
