@@ -26,6 +26,12 @@ class OrderResult:
     filled_avg_price: float
 
 
+@dataclass(frozen=True, slots=True)
+class AccountSnapshot:
+    equity: float
+    cash: float
+
+
 class PaperExecutor:
     def __init__(self, config: AlpacaConfig, client: Any | None = None) -> None:
         if not config.is_paper:
@@ -94,6 +100,15 @@ class PaperExecutor:
 
     async def equity(self) -> float:
         return float((await asyncio.to_thread(self._get_client().get_account)).equity)
+
+    async def account(self) -> AccountSnapshot:
+        """equity AND cash in one call — the basis for the cash/holdings split in
+        every bot message (holdings_value = equity - cash, always broker-true)."""
+        def fetch() -> AccountSnapshot:
+            acct = self._get_client().get_account()
+            return AccountSnapshot(equity=float(acct.equity), cash=float(acct.cash))
+
+        return await asyncio.to_thread(fetch)
 
     async def position_qty(self, symbol: str) -> float:
         def fetch() -> float:

@@ -37,23 +37,35 @@ def test_new_trade_alert_includes_details() -> None:
     assert len(alerts) == 1 and "BTC/USD" in alerts[0] and "buy" in alerts[0]
 
 
-def test_trade_alert_reports_crypto_book_and_holdings() -> None:
+def test_trade_alert_reports_crypto_book_and_holdings_marked_to_market() -> None:
     """Every buy/sell message must answer 'and where does that leave me?' —
-    reporting the CRYPTO book (the account is virtually split with stocks)."""
+    reporting the CRYPTO book (the account is virtually split with stocks),
+    each holding's CURRENT value (not just entry), and cash/holdings/total."""
     cur = dict(BASE, orders=1, crypto_book=49_930.0,
                last_order={"side": "buy", "qty": 6.71, "symbol": "SOL/USD",
                            "price": 74.46, "note": "enter long"},
-               positions={"SOL/USD": {"qty": 6.71, "entry": 74.462},
-                          "BTC/USD": {"qty": 0.0016, "entry": 61_250.0}})
+               positions={
+                   "SOL/USD": {"qty": 6.71, "entry": 74.462, "mid": 75.0,
+                               "value": 6.71 * 75.0},
+                   "BTC/USD": {"qty": 0.0016, "entry": 61_250.0, "mid": 60_000.0,
+                               "value": 0.0016 * 60_000.0},
+               })
     (msg,) = detect_alerts(dict(BASE), cur)
-    assert "crypto book $49,930" in msg
-    assert "6.71 SOL @ $74.46" in msg
-    assert "0.0016 BTC @ $61,250.00" in msg
+    assert "crypto book $49,930.00" in msg
+    assert "6.71 SOL @ $74.46" in msg and "$503.25 now" in msg  # 6.71*75.0
+    assert "0.0016 BTC @ $61,250.00" in msg and "$96.00 now" in msg  # 0.0016*60000
+    holdings_value = 6.71 * 75.0 + 0.0016 * 60_000.0
+    cash = 49_930.0 - holdings_value
+    assert f"cash ${cash:,.2f}" in msg
+    assert f"holdings ${holdings_value:,.2f}" in msg
+    assert f"total ${49_930.0:,.2f}" in msg  # cash + holdings == book, always
 
 
 def test_holdings_line_when_flat() -> None:
-    assert holdings_line(dict(BASE, crypto_book=49_930.0)) \
-        == "crypto book $49,930 · holdings: none"
+    line = holdings_line(dict(BASE, crypto_book=49_930.0))
+    assert "crypto book $49,930.00" in line and "holdings: none" in line
+    assert "cash $49,930.00" in line and "holdings $0.00" in line
+    assert "total $49,930.00" in line
     # no split-book info at all (old status) -> falls back to account equity
     assert "holdings: none" in holdings_line({"equity": 5.0})
 

@@ -193,14 +193,36 @@ def trading_line(cur: dict) -> str:
         avg_s = f"{avg:+.2f}" if avg == avg else "—"
         gap_s = f"{gap:+.2f}" if gap == gap else "—"
         halt = " · ⛔ entries HALTED (loss cap)" if paper.get("halted") else ""
-        bal = paper.get("balance")
-        bal_s = f" · book ${bal:,.0f}" if isinstance(bal, (int, float)) else ""
         body += (
             f"\n💵 <b>paper (real fills)</b>: {paper.get('trades', 0)} tr · "
-            f"avg {avg_s}bps · ${paper.get('pnl_usd', 0.0):+.2f}{bal_s} · "
+            f"avg {avg_s}bps · ${paper.get('pnl_usd', 0.0):+.2f} · "
             f"vs-sim gap {gap_s}bps · errs {paper.get('order_errors', 0)}{halt}"
         )
+        body += f"\n{stocks_book_line(paper)}"
     return body
+
+
+def stocks_book_line(paper: dict) -> str:
+    """Current holdings (marked to the latest quote) + cash/holdings/total for
+    the $50k stocks book — the same breakdown the crypto alerts show."""
+    detail = paper.get("open_detail") or {}
+    if detail:
+        held = "\n" + "\n".join(
+            f"  {d['qty']} {sym} {d['side']} @ ${d['entry_fill']:,.2f} "
+            f"\N{RIGHTWARDS ARROW} ${d['value']:,.2f} now "
+            f"({d['unrealized_usd']:+.2f})"
+            for sym, d in sorted(detail.items())
+        )
+    else:
+        held = " none"
+    cash = paper.get("cash", paper.get("balance", 0.0))
+    hv = paper.get("holdings_value", 0.0)
+    total = paper.get("total", cash + hv)
+    return (
+        f"stocks book ${paper.get('balance', 0.0):,.2f} \N{MIDDLE DOT} holdings:{held}\n"
+        f"cash ${cash:,.2f} \N{MIDDLE DOT} holdings ${hv:,.2f} "
+        f"\N{MIDDLE DOT} total ${total:,.2f}"
+    )
 
 
 def db_size_mb(root: Path) -> float:

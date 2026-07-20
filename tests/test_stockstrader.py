@@ -161,6 +161,35 @@ def test_cli_trade_universe_defaults_to_all_captured_symbols():
     assert args.trade_symbols == ["NVDA"]
 
 
+def test_summary_marks_open_position_to_latest_quote_and_splits_the_book():
+    """2026-07-20 (Oli): current value of holdings, plus cash/holdings/total for
+    the book. While a position is open, summary() must mark it to the latest
+    quote (not the entry fill), and cash+holdings must equal the book balance."""
+    async def go():
+        ex = FakeExecutor([900.10, 900.10])  # entry fill, exit fill
+        tr = make(ex)
+        tr.on_prediction(pred(mid=900.0))
+        await asyncio.sleep(0.01)  # still within the 40ms horizon: position open
+        # a later tick for the same symbol updates last_mid even though the
+        # windowed cadence blocks a second entry
+        tr.on_prediction(pred(ts=5_000_000, mid=905.0))
+        s_open = tr.summary()
+        await asyncio.sleep(HN / 1e9 + 0.05)  # let the round trip finish
+        return tr, s_open
+    tr, s_open = run(go())
+
+    d = s_open["open_detail"]["NVDA"]
+    assert d["qty"] == 1 and d["mid"] == 905.0  # marked to the LATEST quote
+    assert abs(d["value"] - 905.0) < 1e-9
+    assert abs(d["unrealized_usd"] - (905.0 - 900.10)) < 1e-6  # vs the entry FILL
+    assert abs(s_open["holdings_value"] - d["value"]) < 1e-9
+    assert abs(s_open["cash"] - (s_open["balance"] - d["value"])) < 1e-9
+    assert abs(s_open["total"] - s_open["balance"]) < 1e-6  # cash+holdings==balance
+
+    s_closed = tr.summary()
+    assert s_closed["open_detail"] == {} and s_closed["holdings_value"] == 0.0
+
+
 def test_summary_reports_reality_gap():
     async def go():
         ex = FakeExecutor([900.10, 900.55])

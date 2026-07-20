@@ -32,20 +32,30 @@ def load_env(path: str) -> dict[str, str]:
 
 
 def holdings_line(cur: dict) -> str:
-    """CRYPTO book balance + what is actually held right now — appended to every
-    trade alert so a buy/sell message answers 'and where does that leave me?' by
-    itself. The paper account is virtually split 50/50 crypto/stocks (signals.
-    books); crypto messages report the crypto book, not the whole account."""
+    """CRYPTO book balance + what is actually held right now, MARKED TO the
+    latest quote — appended to every trade alert so a buy/sell message answers
+    'and where does that leave me?' by itself. The paper account is virtually
+    split 50/50 crypto/stocks (signals.books); crypto messages report the crypto
+    book, not the whole account. holdings_value is summed from the position
+    detail so it can never disagree with the per-holding lines above it; cash is
+    the remainder of the BOOK (not the broker's whole-account cash, which also
+    covers the stocks book)."""
     pos = cur.get("positions") or {}
-    if pos:
-        held = ", ".join(
-            f"{p['qty']:.6g} {s.split('/')[0]} @ ${p['entry']:,.2f}"
-            for s, p in sorted(pos.items())
-        )
-    else:
-        held = "none"
     bal = cur.get("crypto_book", cur.get("equity", 0))
-    return f"crypto book ${bal:,.0f} · holdings: {held}"
+    holdings_value = 0.0
+    lines = []
+    for s, p in sorted(pos.items()):
+        value = p.get("value", p["qty"] * p.get("mid", p["entry"]))
+        holdings_value += value
+        lines.append(f"  {p['qty']:.6g} {s.split('/')[0]} @ ${p['entry']:,.2f} "
+                     f"\N{RIGHTWARDS ARROW} ${value:,.2f} now")
+    held = "\n" + "\n".join(lines) if lines else " none"
+    cash = bal - holdings_value
+    return (
+        f"crypto book ${bal:,.2f} \N{MIDDLE DOT} holdings:{held}\n"
+        f"cash ${cash:,.2f} \N{MIDDLE DOT} holdings ${holdings_value:,.2f} "
+        f"\N{MIDDLE DOT} total ${cash + holdings_value:,.2f}"
+    )
 
 
 def detect_alerts(prev: dict, cur: dict) -> list[str]:
@@ -130,10 +140,10 @@ def main() -> None:
         send(
             creds,
             f"daily: {cur['fresh'].upper()} · pnl ${cur['pnl']:+.2f}"
-            f" · orders {cur['orders']} · {learned:,.0f} samples learned"
-            f" · crypto book ${cur['crypto_book']:,.0f}"
-            f" · stocks book ${cur['stocks_book']:,.0f}"
-            f" (acct ${status.get('equity', 0):,.0f})",
+            f" · orders {cur['orders']} · {learned:,.0f} samples learned\n"
+            f"{holdings_line(cur)}\n"
+            f"stocks book ${cur['stocks_book']:,.2f} "
+            f"(acct ${status.get('equity', 0):,.2f})",
         )
     else:
         for alert in detect_alerts(prev, cur):

@@ -20,6 +20,7 @@ from stocks_alerts import (  # noqa: E402
     detect,
     in_session,
     shadow_descriptor,
+    stocks_book_line,
     trading_line,
 )
 
@@ -148,6 +149,49 @@ def test_disk_warning_fires_once_on_the_way_up():
     assert any("disk 91% full" in m for m in detect(quiet, full))
     # already high -> no repeat every 5 minutes
     assert not any("disk" in m for m in detect(full, full))
+
+
+def test_stocks_book_line_reports_open_positions_marked_to_market():
+    """2026-07-20 (Oli): current value of each holding, plus cash/holdings/total
+    for the $50k stocks book — the same breakdown crypto alerts show."""
+    paper = {
+        "balance": 50_012.34, "cash": 49_112.34, "holdings_value": 900.0,
+        "total": 50_012.34,
+        "open_detail": {
+            "NVDA": {"side": "long", "qty": 1, "entry_fill": 899.10,
+                     "mid": 905.0, "value": 905.0, "unrealized_usd": 5.90},
+            "AAPL": {"side": "short", "qty": -1, "entry_fill": 200.0,
+                     "mid": 195.0, "value": -195.0, "unrealized_usd": 5.0},
+        },
+    }
+    line = stocks_book_line(paper)
+    assert "stocks book $50,012.34" in line
+    assert "NVDA long @ $899.10" in line and "$905.00 now" in line and "+5.90" in line
+    assert "AAPL short @ $200.00" in line and "$-195.00 now" in line
+    assert "cash $49,112.34" in line
+    assert "holdings $900.00" in line
+    assert "total $50,012.34" in line
+
+
+def test_stocks_book_line_when_flat():
+    paper = {"balance": 50_000.0, "cash": 50_000.0, "holdings_value": 0.0,
+             "total": 50_000.0, "open_detail": {}}
+    line = stocks_book_line(paper)
+    assert "holdings: none" in line
+    assert "cash $50,000.00" in line and "holdings $0.00" in line
+    assert "total $50,000.00" in line
+
+
+def test_trading_line_appends_stocks_book_when_paper_trading_is_on():
+    cur = _traded(paper={
+        "trades": 3, "avg_net_bps": 1.2, "pnl_usd": 4.5, "sim_gap_bps": -0.3,
+        "order_errors": 0, "halted": False,
+        "balance": 50_004.5, "cash": 50_004.5, "holdings_value": 0.0,
+        "total": 50_004.5, "open_detail": {},
+    })
+    line = trading_line(cur)
+    assert "paper (real fills)" in line
+    assert "stocks book $50,004.50" in line
 
 
 def test_in_session_uses_exchange_timezone_not_utc():

@@ -186,18 +186,39 @@ class StocksTrader:
         n = len(self.trades)
         nets = [t["net_bps"] for t in self.trades]
         gaps = [t["net_bps"] - t["sim_net_bps"] for t in self.trades]
+        balance = books.stocks_balance(self.book_pnl_cum)  # the $50k book
+
+        # open positions MARKED TO the latest quote (self.last_mid), so the book
+        # can report a current holdings value, not just what it's holding.
+        open_detail = {}
+        holdings_value = 0.0
+        for sym, pos in self.open_pos.items():
+            mid = self.last_mid.get(sym, pos.entry_fill)
+            value = pos.qty * mid
+            holdings_value += value
+            open_detail[sym] = {
+                "side": "long" if pos.side > 0 else "short", "qty": pos.qty,
+                "entry_fill": pos.entry_fill, "mid": mid, "value": value,
+                "unrealized_usd": pos.side * (mid - pos.entry_fill) * pos.qty,
+            }
+        cash = balance - holdings_value
+
         return {
             "trades": n,
             "wins": sum(1 for x in nets if x > 0),
             "avg_net_bps": (sum(nets) / n) if n else float("nan"),
             "pnl_usd": self.realized_usd,
-            "balance": books.stocks_balance(self.book_pnl_cum),  # the $50k book
+            "balance": balance,
             "pnl_cum": self.book_pnl_cum,
+            "cash": cash,
+            "holdings_value": holdings_value,
+            "total": cash + holdings_value,  # == balance; shown for the "together" view
             # negative gap = reality pays more toll than the sim charges
             "sim_gap_bps": (sum(gaps) / n) if n else float("nan"),
             "orders": self.orders,
             "order_errors": self.order_errors,
             "halted": self.halted,
             "open": sorted(self.open_pos),
+            "open_detail": open_detail,
             "recent": self.trades[-10:],
         }

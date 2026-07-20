@@ -74,15 +74,22 @@ def send(creds: dict[str, str], text: str) -> None:
 
 def account_line(root: Path) -> str:
     """Both virtual books of the ONE shared paper account (signals.books):
-    stocks = $50k + its own cumulative P&L, crypto = the remainder."""
+    stocks = $50k + its own cumulative P&L (flat by digest time — EOD flatten
+    already ran), crypto = the remainder, broken into cash + current holdings
+    value (crypto runs 24/7 and is often NOT flat)."""
     from signals.books import crypto_balance, read_stocks_pnl, stocks_balance
     try:
         st = json.loads((root / "data" / "status.json").read_text())
         age = time.time() - st.get("ts", 0)
         fresh = "" if age < 600 else " ⚠stale"
         spnl = read_stocks_pnl(root)
-        return (f"stocks book ${stocks_balance(spnl):,.0f} · "
-                f"crypto book ${crypto_balance(st.get('equity', 0), spnl):,.0f}{fresh}")
+        stocks_bal = stocks_balance(spnl)
+        crypto_bal = crypto_balance(st.get("equity", 0), spnl)
+        crypto_holdings = sum(p.get("value", 0.0) for p in st.get("positions", {}).values())
+        crypto_cash = crypto_bal - crypto_holdings
+        return (f"stocks book ${stocks_bal:,.0f} · "
+                f"crypto book ${crypto_bal:,.0f} "
+                f"(cash ${crypto_cash:,.0f} + holdings ${crypto_holdings:,.0f}){fresh}")
     except (OSError, ValueError):
         return "paper acct n/a"
 

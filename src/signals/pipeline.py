@@ -116,6 +116,8 @@ class Pipeline:
         self.tap: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=50_000)
         self.tap_dropped = 0
         self.equity = 0.0
+        self.cash = 0.0  # broker cash; holdings_value = equity - cash (always true)
+        self.last_mid: dict[str, float] = {}  # latest mid per symbol, for marking
         self.orders_submitted = 0
         self.order_errors = 0
         self.signals_actioned = 0
@@ -249,6 +251,7 @@ class Pipeline:
         pred = step.prediction
         if pred is None:
             return
+        self.last_mid[pred.symbol] = pred.mid  # for marking open positions to market
         self._proc_us.append(pred.proc_us)
         self._tap(
             LogPrediction(
@@ -284,7 +287,8 @@ class Pipeline:
             refresh_due = now - last_equity_refresh > self.config.equity_refresh_s
             if self.executor is not None and refresh_due:
                 with contextlib.suppress(Exception):
-                    self.equity = await self.executor.equity()
+                    snap = await self.executor.account()
+                    self.equity, self.cash = snap.equity, snap.cash
                     last_equity_refresh = now
             lat = np.array(self._proc_us) if self._proc_us else np.array([0.0])
             metrics = {s: p.model.metrics() for s, p in self.pipes.items()}
@@ -337,10 +341,15 @@ class Pipeline:
                 for s, m in metrics.items()
             },
             "open_positions": self.book.open_count,
-            # per-position detail so alert messages can say WHAT is held, not just
-            # how many (Telegram buy/sell alerts append balance + holdings)
+            # per-position detail, MARKED TO the latest quote, so alert messages
+            # can say what each holding is worth right now, not just its entry
+            # (Telegram buy/sell alerts append balance + current holdings value)
             "positions": {
-                s: {"qty": p.qty, "entry": p.entry_price}
+                s: {
+                    "qty": p.qty, "entry": p.entry_price,
+                    "mid": self.last_mid.get(s, p.entry_price),
+                    "value": p.qty * self.last_mid.get(s, p.entry_price),
+                }
                 for s, p in self.book.positions.items()
             },
             "orders": self.orders_submitted,
@@ -349,6 +358,7 @@ class Pipeline:
             "breaker": "TRIPPED" if self.risk.circuit_breaker_tripped else "ok",
             "tap_dropped": self.tap_dropped,
             "equity": self.equity,
+            "cash": self.cash,  # holdings_value = equity - cash, broker-true
             "reconnects": getattr(self.source, "reconnects", 0),
             "recent_orders": list(self._recent_orders),
         }
@@ -374,7 +384,8 @@ class Pipeline:
                 # stocks paper trader — account-wide close would nuke its book.
                 with contextlib.suppress(Exception):
                     await self.executor.flatten_symbols(self.config.symbols)
-            self.equity = await self.executor.equity()
+            snap = await self.executor.account()
+            self.equity, self.cash = snap.equity, snap.cash
             print(f"paper equity: {self.equity:.2f}")
         started = time.monotonic()
         tasks = [
