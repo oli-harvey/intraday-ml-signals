@@ -21,12 +21,20 @@ Design:
 
 We keep the shadow books running unchanged next to this — three measurements of
 the same config (backtest, shadow, paper) that must agree or explain themselves.
+
+`on_fill` (2026-07-20, messaging review): an optional hook called with one dict
+per real fill — entry, exit, or a reconciliation close — so a caller (stocks_
+live.py) can post a real-time trade blotter ("what got traded, why, and what's
+the cumulative position now") instead of only the periodic heartbeat. Called
+SYNCHRONOUSLY on the trading path: it must not block (schedule any I/O, e.g. a
+Telegram send, as its own task) or it will stall the round-trip loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import books, simrule
@@ -59,6 +67,7 @@ class StocksTrader:
     daily_loss_cap_usd: float = 25.0
     allow_short: bool = True
     book_root: str | None = None  # persist the $50k stocks book here (None: off)
+    on_fill: Callable[[dict], None] | None = None  # real-time blotter hook, see module docstring
 
     open_pos: dict[str, OpenPosition] = field(default_factory=dict)
     pending: set[str] = field(default_factory=set)  # symbols with in-flight orders
@@ -75,6 +84,18 @@ class StocksTrader:
     def __post_init__(self) -> None:
         if self.book_root is not None:
             self.book_pnl_cum = books.read_stocks_pnl(self.book_root)
+
+    def _notify(self, kind: str, **fields: object) -> None:
+        """Fire the blotter hook, if any. Never let a hook failure reach the
+        trading loop — a Telegram/network bug in the notifier must not stop
+        real orders from being managed."""
+        if self.on_fill is None:
+            return
+        event = {"kind": kind, "balance": books.stocks_balance(self.book_pnl_cum), **fields}
+        try:
+            self.on_fill(event)
+        except Exception:
+            log.exception("on_fill hook raised for %s event", kind)
 
     # ---- hot path -----------------------------------------------------------
     def on_prediction(self, p: Prediction) -> None:
@@ -106,6 +127,16 @@ class StocksTrader:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def flatten_on_start(self) -> None:
+        """Startup reconciliation, parity with the crypto pipeline: `open_pos`
+        starts empty on every process start (fresh restart, new session), so
+        any position the BROKER still holds in our symbols is unmanaged
+        residue from a prior run (a stranded exit, a killed process). Start
+        from known-flat or the day's P&L is unattributable. Safe to call even
+        when flat (flatten_symbols reports nothing to close)."""
+        closed = await self.executor.flatten_symbols(self.symbols)
+        self._record_reconciliation_closes(closed)
+
     # ---- order path (off the hot loop) --------------------------------------
     async def _round_trip(self, sym: str, direction: float, qty: int, p: Prediction) -> None:
         try:
@@ -122,6 +153,11 @@ class StocksTrader:
                 entry_fill=res.filled_avg_price, signal_mid=p.mid,
                 signal_spread_bps=p.spread_bps, pred_bps=p.predicted * 1e4,
                 entry_ns=p.ts_ns,
+            )
+            self._notify(
+                "entry", symbol=sym, side="long" if direction > 0 else "short",
+                qty=int(res.filled_qty), price=res.filled_avg_price,
+                pred_bps=p.predicted * 1e4,
             )
             await asyncio.sleep(self.horizon_ns / 1e9)  # hold for the horizon
             await self._exit(sym)
@@ -162,6 +198,12 @@ class StocksTrader:
             "exit_fill": exit_px, "net_bps": net_bps, "pnl_usd": pnl_usd,
             "sim_net_bps": sim_net, "spread_bps": pos.signal_spread_bps,
         })
+        self._notify(
+            "exit", symbol=sym, side="long" if pos.side > 0 else "short",
+            qty=pos.qty, entry_fill=pos.entry_fill, exit_fill=exit_px,
+            net_bps=net_bps, pnl_usd=pnl_usd, sim_net_bps=sim_net,
+            pred_bps=pos.pred_bps,
+        )
         if self.realized_usd <= -self.daily_loss_cap_usd:
             self.halted = True
             log.warning("daily loss cap hit ($%.2f) — entries halted", self.realized_usd)
@@ -197,15 +239,20 @@ class StocksTrader:
             self.book_pnl_cum += pnl
             if self.book_root is not None:
                 books.write_stocks_pnl(self.book_pnl_cum, self.book_root)
+            net_bps = (pnl / (abs(qty) * entry) * 1e4) if qty and entry else float("nan")
             self.trades.append({
                 "symbol": c["symbol"], "ts_ns": 0,
                 "side": "long" if qty > 0 else "short", "qty": abs(qty),
                 "pred_bps": float("nan"), "entry_fill": entry,
-                "exit_fill": float("nan"),
-                "net_bps": (pnl / (abs(qty) * entry) * 1e4) if qty and entry else float("nan"),
+                "exit_fill": float("nan"), "net_bps": net_bps,
                 "pnl_usd": pnl, "sim_net_bps": float("nan"),
                 "spread_bps": float("nan"), "reconciliation": True,
             })
+            self._notify(
+                "reconciliation", symbol=c["symbol"],
+                side="long" if qty > 0 else "short", qty=abs(qty),
+                entry_fill=entry, pnl_usd=pnl, net_bps=net_bps,
+            )
 
     # ---- reporting ----------------------------------------------------------
     def summary(self) -> dict:

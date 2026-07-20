@@ -50,7 +50,8 @@ dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wai
 # shares), 6 open max (order rate stays well under Alpaca's 200/min), $50 daily
 # loss cap, EOD flatten scoped to its own symbols (the account is shared with
 # crypto). Paper money only; the point is real fills vs the sim's cost model.
+# --env posts a real-time Telegram blotter line per fill (2026-07-20).
 exec .venv/bin/python scripts/stocks_live.py \
   --symbols $SYMBOLS --duration "$dur" --db "$db" \
   --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2 \
-  --trade --notional 1000 --max-open 6 --daily-loss-cap 50
+  --trade --notional 1000 --max-open 6 --daily-loss-cap 50 --env "$HOME/digest.env"

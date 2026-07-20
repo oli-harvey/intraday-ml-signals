@@ -3,6 +3,13 @@
 The regression that matters: on 2026-07-13 the 30-symbol capture stalled its writer
 for five hours (rows frozen, queue at cap, 34 reconnects) and nothing told us. These
 tests pin the alerts that would have caught it.
+
+2026-07-20 messaging review: the live heartbeat used to mix backtest numbers
+(windowed/per-quote trade counts) with the REAL paper book in one dense,
+unlabelled message — confusing, and the direct cause of "what is windowed vs
+paper real fills?". position_line() is now ops-only (the real book);
+research_summary() is a short, clearly-labelled backtest comparison used only
+in the once-a-day close summary, not the live heartbeat.
 """
 
 from __future__ import annotations
@@ -19,9 +26,9 @@ from stocks_alerts import (  # noqa: E402
     QUEUE_CAP,
     detect,
     in_session,
+    position_line,
+    research_summary,
     shadow_descriptor,
-    stocks_book_line,
-    trading_line,
 )
 
 NY = ZoneInfo("America/New_York")
@@ -29,40 +36,87 @@ NY = ZoneInfo("America/New_York")
 
 def _state(**kw):
     base = {"state": "open", "events": 1000, "rows": 990, "q_hwm": 50,
-            "reconnects": 0, "db_mb": 10.0, "dropped": 0, "trades": 0,
-            "net_bps": 0.0, "avg_bps": float("nan"), "hit": float("nan"),
-            "by_symbol": {}, "config": "ev no-micro 5s dz4 spread<2bp"}
+            "reconnects": 0, "db_mb": 10.0, "dropped": 0, "paper": None,
+            "sim_trades": 0, "sim_avg_bps": float("nan"),
+            "pq_trades": 0, "pq_avg_bps": float("nan"),
+            "config": "ev no-micro 5s dz4 spread<2bp"}
+    return {**base, **kw}
+
+
+def _paper(**kw):
+    base = {
+        "trades": 34, "avg_net_bps": 2.9, "pnl_usd": 98.6, "sim_gap_bps": -0.4,
+        "order_errors": 0, "halted": False, "reconciliations": 0,
+        "balance": 50_098.6, "cash": 50_098.6, "holdings_value": 0.0,
+        "total": 50_098.6, "open_detail": {},
+    }
     return {**base, **kw}
 
 
 def _traded(**kw):
     return _state(
-        trades=34, net_bps=98.6, avg_bps=2.9, hit=0.62,
-        by_symbol={
-            "NVDA": {"trades": 21, "net_bps": 65.1, "avg_net_bps": 3.1, "hit_rate": 0.62},
-            "AAPL": {"trades": 13, "net_bps": 33.5, "avg_net_bps": 2.2, "hit_rate": 0.61},
-        },
-        **kw,
+        sim_trades=214, sim_avg_bps=2.66, pq_trades=3764, pq_avg_bps=1.11,
+        paper=_paper(), **kw,
     )
 
 
-def test_trading_line_reports_how_many_stocks_were_traded():
-    line = trading_line(_traded())
-    assert "34 trades" in line
-    assert "+99bps" in line or "+98bps" in line  # net for the session
-    assert "hit 62%" in line
-    assert "NVDA 21@+3.1" in line and "AAPL 13@+2.2" in line
+def test_position_line_reports_the_real_book_not_the_backtest():
+    line = position_line(_traded())
+    assert "34 real trades" in line
+    assert "avg +2.90bps" in line
+    assert "$+98.60" in line
+    assert "stocks book $50,098.60" in line
+    # the backtest numbers must NOT be in this message at all
+    assert "214" not in line and "windowed" not in line
 
 
-def test_trading_line_is_explicit_when_nothing_traded():
-    assert "trades 0" in trading_line(_state())
+def test_position_line_is_explicit_when_no_trading_configured():
+    assert "no real orders configured" in position_line(_state())
 
 
-def test_close_summary_leads_with_the_trading_result():
+def test_position_line_shows_open_positions_marked_to_market():
+    paper = _paper(open_detail={
+        "NVDA": {"side": "long", "qty": 1, "entry_fill": 899.10,
+                 "mid": 905.0, "value": 905.0, "unrealized_usd": 5.90},
+        "AAPL": {"side": "short", "qty": -1, "entry_fill": 200.0,
+                 "mid": 195.0, "value": -195.0, "unrealized_usd": 5.0},
+    }, holdings_value=900.0, cash=49_198.6, total=50_098.6)
+    line = position_line(_state(paper=paper))
+    assert "NVDA long @ $899.10" in line and "$905.00 now" in line and "+5.90" in line
+    assert "AAPL short @ $200.00" in line and "$-195.00 now" in line
+    assert "cash $49,198.60" in line and "holdings $900.00" in line
+    assert "total $50,098.60" in line
+
+
+def test_position_line_flags_halt_and_reconciliations():
+    line = position_line(_state(paper=_paper(halted=True, reconciliations=2)))
+    assert "HALTED" in line and "2 reconciliation close(s)" in line
+
+
+def test_research_summary_is_clearly_labelled_and_separate():
+    """The whole point of the split: this must say plainly that it is NOT
+    real trades, and must never appear in the live heartbeat (only the
+    once-daily close)."""
+    line = research_summary(_traded())
+    assert "backtest, not real trades" in line
+    assert "windowed 214 tr avg +2.66bps" in line
+    assert "per-quote 3764 tr avg +1.11bps" in line
+
+
+def test_position_line_never_contains_the_research_label():
+    """The heartbeat is built from position_line() alone (main() appends it
+    directly, with no research_summary() call) — assert that at the unit
+    level: position_line()'s own output can never carry the backtest label,
+    so wiring it into the heartbeat can't accidentally leak research numbers."""
+    assert "backtest" not in position_line(_traded()).lower()
+
+
+def test_close_summary_leads_with_the_real_position_and_a_short_research_line():
     msgs = detect(_traded(), _traded(state="closed"))
     assert len(msgs) == 1
     assert "session close" in msgs[0]
-    assert "34 trades" in msgs[0]  # the number the user actually asked for
+    assert "34 real trades" in msgs[0]
+    assert "backtest, not real trades" in msgs[0]
 
 
 def test_session_open_announced_once():
@@ -169,49 +223,6 @@ def test_disk_warning_fires_once_on_the_way_up():
     assert any("disk 91% full" in m for m in detect(quiet, full))
     # already high -> no repeat every 5 minutes
     assert not any("disk" in m for m in detect(full, full))
-
-
-def test_stocks_book_line_reports_open_positions_marked_to_market():
-    """2026-07-20 (Oli): current value of each holding, plus cash/holdings/total
-    for the $50k stocks book — the same breakdown crypto alerts show."""
-    paper = {
-        "balance": 50_012.34, "cash": 49_112.34, "holdings_value": 900.0,
-        "total": 50_012.34,
-        "open_detail": {
-            "NVDA": {"side": "long", "qty": 1, "entry_fill": 899.10,
-                     "mid": 905.0, "value": 905.0, "unrealized_usd": 5.90},
-            "AAPL": {"side": "short", "qty": -1, "entry_fill": 200.0,
-                     "mid": 195.0, "value": -195.0, "unrealized_usd": 5.0},
-        },
-    }
-    line = stocks_book_line(paper)
-    assert "stocks book $50,012.34" in line
-    assert "NVDA long @ $899.10" in line and "$905.00 now" in line and "+5.90" in line
-    assert "AAPL short @ $200.00" in line and "$-195.00 now" in line
-    assert "cash $49,112.34" in line
-    assert "holdings $900.00" in line
-    assert "total $50,012.34" in line
-
-
-def test_stocks_book_line_when_flat():
-    paper = {"balance": 50_000.0, "cash": 50_000.0, "holdings_value": 0.0,
-             "total": 50_000.0, "open_detail": {}}
-    line = stocks_book_line(paper)
-    assert "holdings: none" in line
-    assert "cash $50,000.00" in line and "holdings $0.00" in line
-    assert "total $50,000.00" in line
-
-
-def test_trading_line_appends_stocks_book_when_paper_trading_is_on():
-    cur = _traded(paper={
-        "trades": 3, "avg_net_bps": 1.2, "pnl_usd": 4.5, "sim_gap_bps": -0.3,
-        "order_errors": 0, "halted": False,
-        "balance": 50_004.5, "cash": 50_004.5, "holdings_value": 0.0,
-        "total": 50_004.5, "open_detail": {},
-    })
-    line = trading_line(cur)
-    assert "paper (real fills)" in line
-    assert "stocks book $50,004.50" in line
 
 
 def test_in_session_uses_exchange_timezone_not_utc():

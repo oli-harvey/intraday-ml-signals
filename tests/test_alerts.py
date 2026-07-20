@@ -34,7 +34,27 @@ def test_new_trade_alert_includes_details() -> None:
         "side": "buy", "qty": 0.0016, "symbol": "BTC/USD",
         "price": 61000.0, "note": "enter long"})
     alerts = detect_alerts(dict(BASE), cur)
-    assert len(alerts) == 1 and "BTC/USD" in alerts[0] and "buy" in alerts[0]
+    assert len(alerts) == 1 and "BTC/USD" in alerts[0]
+    assert "BOUGHT" in alerts[0]  # plain-English blotter verb, not the raw "buy"
+
+
+def test_sell_alert_uses_the_sold_verb() -> None:
+    cur = dict(BASE, orders=1, last_order={
+        "side": "sell", "qty": 0.0016, "symbol": "BTC/USD",
+        "price": 61500.0, "note": "exit long"})
+    (msg,) = detect_alerts(dict(BASE), cur)
+    assert "SOLD" in msg
+
+
+def test_trade_alert_escapes_html_breaking_characters_in_the_note() -> None:
+    """The exact bug that killed stocks alerts for hours (2026-07-20): a raw
+    '<' in free text broke Telegram's HTML parser and 400'd the whole
+    message. The note field is model-generated free text — escape it."""
+    cur = dict(BASE, orders=1, last_order={
+        "side": "buy", "qty": 1.0, "symbol": "BTC/USD",
+        "price": 100.0, "note": "enter long (edge<2bp)"})
+    (msg,) = detect_alerts(dict(BASE), cur)
+    assert "edge&lt;2bp" in msg and "edge<2bp" not in msg
 
 
 def test_trade_alert_reports_crypto_book_and_holdings_marked_to_market() -> None:

@@ -232,3 +232,82 @@ def test_summary_reports_reality_gap():
     assert s["trades"] == 1 and s["orders"] == 2
     assert s["sim_gap_bps"] == s["sim_gap_bps"]  # not NaN
     assert "recent" in s and s["recent"][0]["exit_fill"] == 900.55
+
+
+def test_on_fill_hook_fires_for_entry_then_exit_with_running_balance():
+    """2026-07-20 messaging review: the blotter needs 'what got traded, why,
+    and what's the cumulative position now' in real time, not just at the
+    next heartbeat. Each event must carry the balance AS OF that event."""
+    events = []
+    async def go():
+        ex = FakeExecutor([900.10, 900.55])
+        tr = make(ex, on_fill=events.append)
+        tr.on_prediction(pred(predicted=0.0010))
+        await asyncio.sleep(HN / 1e9 + 0.15)
+        return tr
+    run(go())
+    assert [e["kind"] for e in events] == ["entry", "exit"]
+    entry, exit_ = events
+    assert entry["symbol"] == "NVDA" and entry["side"] == "long"
+    assert entry["price"] == 900.10 and entry["pred_bps"] == 10.0
+    assert entry["balance"] == 50_000.0  # unchanged until the trade resolves
+    assert exit_["net_bps"] > 0 and exit_["pnl_usd"] > 0
+    assert exit_["balance"] == 50_000.0 + exit_["pnl_usd"]  # cumulative position
+
+
+def test_on_fill_hook_exception_never_reaches_the_trading_loop():
+    """A bug in the notifier (e.g. a Telegram error) must not stop real
+    orders from being managed — this is a live-money-adjacent path."""
+    def bad_hook(event):
+        raise RuntimeError("telegram is down")
+    async def go():
+        ex = FakeExecutor([900.10, 900.55])
+        tr = make(ex, on_fill=bad_hook)
+        tr.on_prediction(pred())
+        await asyncio.sleep(HN / 1e9 + 0.15)
+        return tr
+    tr = run(go())  # must not raise
+    assert tr.trades and tr.trades[0]["net_bps"] == tr.trades[0]["net_bps"]
+
+
+def test_on_fill_hook_fires_for_reconciliation_closes():
+    events = []
+    async def go():
+        ex = FakeExecutor([], stranded=[
+            {"symbol": "AAPL", "qty": -3.0, "avg_entry_price": 200.0,
+             "market_value": -597.0, "unrealized_pl": -3.0},
+        ])
+        tr = make(ex, on_fill=events.append)
+        await tr.close_all()
+    run(go())
+    (event,) = events
+    assert event["kind"] == "reconciliation"
+    assert event["symbol"] == "AAPL" and event["side"] == "short"
+    assert event["pnl_usd"] == -3.0
+    assert event["balance"] == 50_000.0 - 3.0
+
+
+def test_flatten_on_start_reconciles_stranded_positions_and_notifies():
+    events = []
+    async def go():
+        ex = FakeExecutor([], stranded=[
+            {"symbol": "NVDA", "qty": 2.0, "avg_entry_price": 900.0,
+             "market_value": 1810.0, "unrealized_pl": 10.0},
+        ])
+        tr = make(ex, on_fill=events.append)
+        await tr.flatten_on_start()
+        return ex, tr
+    ex, tr = run(go())
+    assert ex.flattened == [["NVDA", "AAPL"]]
+    assert tr.book_pnl_cum == 10.0
+    assert events and events[0]["kind"] == "reconciliation"
+
+
+def test_flatten_on_start_is_a_noop_when_already_flat():
+    async def go():
+        ex = FakeExecutor([])  # no stranded positions
+        tr = make(ex)
+        await tr.flatten_on_start()
+        return tr
+    tr = run(go())
+    assert tr.trades == [] and tr.book_pnl_cum == 0.0

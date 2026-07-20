@@ -25,14 +25,11 @@ import datetime as dt
 import glob
 import json
 import statistics as stats
-import sys
 import time
-import traceback
-import urllib.parse
-import urllib.request
 from dataclasses import replace
 from pathlib import Path
 
+from signals import telegram as tg
 from signals.evaluation import SymbolScore, evaluate
 from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
@@ -52,26 +49,6 @@ PHASES = 10  # sampling-phase offsets averaged over (the lucky-grid guard)
 # Both change the numbers, so the pre-07-13 rows are not comparable: new id.
 CONFIG_ID = (f"ev_nomicro3_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}"
              f"_sc{SPREAD_CAP_BPS:g}_phasemean{PHASES}")
-
-
-def load_env(path: str) -> dict[str, str]:
-    out = {}
-    for line in Path(path).read_text().splitlines():
-        if "=" in line and not line.strip().startswith("#"):
-            key, _, value = line.partition("=")
-            out[key.strip()] = value.strip().strip('"')
-    return out
-
-
-def send(creds: dict[str, str], text: str) -> None:
-    # HTML parse mode so the <pre> block renders as an aligned monospace table.
-    data = urllib.parse.urlencode({
-        "chat_id": creds["TELEGRAM_CHAT_ID"], "text": text,
-        "parse_mode": "HTML", "disable_web_page_preview": "true",
-    }).encode()
-    url = f"https://api.telegram.org/bot{creds['TELEGRAM_BOT_TOKEN']}/sendMessage"
-    with urllib.request.urlopen(url, data=data, timeout=15) as resp:
-        resp.read()
 
 
 def account_line(root: Path) -> str:
@@ -455,13 +432,19 @@ def main() -> None:
         )
     table = "\n".join(lines)
     greens = sum(1 for s in result if net_key(s) > 0)
+    # 🔬 marks every RESEARCH message across all three bot scripts (this digest,
+    # and the short comparison line in stocks_alerts.py's close summary) — the
+    # fixed visual vocabulary that keeps "is there an edge" and "what did the
+    # real book do" from bleeding into each other (2026-07-20 messaging review).
     msg = (
-        f"📊 <b>equities OOS · {day}</b>  ({greens}/{len(result)} names net+)\n"
+        f"\N{MICROSCOPE} <b>research digest · equities OOS · {day}</b>"
+        f"  ({greens}/{len(result)} names net+)\n"
         f"{account_line(root)}\n"
         f"ev no-micro · 5s · dz{DEAD_ZONE_BPS:g} · spread&lt;{SPREAD_CAP_BPS:g}bp · fee 0\n"
         f"net=phase-mean · ±ph=spread across phases (fragility) · pq=per-quote · "
         f"Lnet=long-only\n"
-        f"* = tracked. top {len(show)} of {len(result)} by net\n"
+        f"* = tracked. top {len(show)} of {len(result)} by net \N{MIDDLE DOT} "
+        f"BACKTEST — real fills are the stocks bot's own blotter\n"
         f"<pre>{table}</pre>"
     )
     if cum:
@@ -470,15 +453,15 @@ def main() -> None:
     if args.no_send:
         print(msg)
     else:
-        # A send failure (Telegram outage, transient network error) must not
-        # cost the session a row in the rolling tally — the digest only scores
-        # the LATEST db, so a lost row here silently creates a permanent gap
-        # until someone notices and re-runs --backfill by hand.
-        try:
-            send(load_env(args.env), msg)
-        except Exception:
-            print(f"SEND FAILED for {day} (history still recorded):", file=sys.stderr)
-            traceback.print_exc()
+        creds = tg.load_env(args.env)
+        button = None
+        if creds.get("DASHBOARD_BASE_URL"):
+            button = tg.dashboard_button(f"{creds['DASHBOARD_BASE_URL']}/stocks_app.html")
+        # tg.send() never raises — a send failure (Telegram outage, transient
+        # network error) must not cost the session a row in the rolling tally:
+        # the digest only scores the LATEST db, so a lost row here would
+        # silently create a permanent gap until someone re-runs --backfill.
+        tg.send(creds, msg, reply_markup=button)
 
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a") as fh:

@@ -1,16 +1,18 @@
-"""Live equities session: capture + live shadow trading book.
+"""Live equities session: capture + live shadow trading book + (since 2026-07-18)
+REAL paper orders, with a real-time Telegram blotter (since 2026-07-20).
 
 Replaces scripts/record.py for the market-hours capture. It does everything the
 recorder did (same quotes -> same DuckDB, byte-for-byte the same research data) and
-ALSO runs the tracked model live on the same feed, booking simulated trades as their
-horizons elapse. That is what lets the Telegram bot say "NVDA: 34 trades, +2.9bps,
-62% hit" DURING the session instead of only after the nightly replay.
+ALSO runs the tracked model live on the same feed:
+  - a SHADOW book (no orders) in two cadences, for comparison against every
+    RESEARCH.md/nightly-digest number
+  - with --trade, a REAL paper trader (signals.stockstrader.StocksTrader) that
+    places actual orders on Alpaca's paper API — real fills, real slippage — and
+    posts each fill to Telegram as it happens (entry, exit, or a reconciliation
+    close), so "what got traded, why, and what's the position now" is answered
+    in real time, not just at the next heartbeat.
 
 Why one process: Alpaca allows a single stocks websocket. Capture and model share it.
-
-We do NOT place stock orders. There is no executor here at all — this is a shadow
-book. The tracked edge is short-dependent and equities shorting needs a margin
-account, and the config is not validated enough to risk capital. See RESEARCH.md.
 
 The model/feature/trade code is the SAME code the backtest uses (core.SymbolPipeline
 + simrule), so the live numbers and the nightly digest are directly comparable — any
@@ -18,7 +20,7 @@ disagreement is a bug, not an excuse.
 
 Usage (see deploy/run_equities_capture.sh):
     uv run python scripts/stocks_live.py --symbols SPY NVDA ... --duration 23400 \
-        --db data/equities_$(date +%F).duckdb
+        --db data/equities_$(date +%F).duckdb --trade --env ~/digest.env
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import time
 
 import uvloop
 
+from signals import telegram as tg
 from signals.config import load_alpaca_config
 from signals.core import SymbolPipeline
 from signals.data.alpaca import AlpacaSource
@@ -43,6 +46,37 @@ from signals.stockstrader import StocksTrader
 from signals.storage.coldstore import ColdStore
 
 STATUS_PATH = "data/status_stocks.json"  # NOT status.json — that is the crypto pipeline's
+
+
+def format_blotter_line(event: dict) -> str:
+    """One real-time trade-blotter message per fill: what got traded, why (the
+    prediction that triggered entry, or the net result at exit), and the
+    running stocks-book balance — the 'cumulative position' the live heartbeat
+    alone doesn't answer fast enough (2026-07-20 messaging review)."""
+    bal = event["balance"]
+    sym = tg.esc(event["symbol"])
+    if event["kind"] == "entry":
+        verb = "BOUGHT" if event["side"] == "long" else "SOLD SHORT"
+        return (
+            f"\N{INBOX TRAY} <b>{verb}</b> {event['qty']} {sym} @ {event['price']:,.2f}"
+            f" \N{EM DASH} pred {event['pred_bps']:+.1f}bps\n"
+            f"stocks book ${bal:,.2f}"
+        )
+    if event["kind"] == "exit":
+        verb = "SOLD" if event["side"] == "long" else "COVERED"
+        return (
+            f"\N{OUTBOX TRAY} <b>{verb}</b> {event['qty']} {sym} "
+            f"@ {event['exit_fill']:,.2f} \N{EM DASH} net {event['net_bps']:+.2f}bps "
+            f"(${event['pnl_usd']:+.2f}) vs sim {event['sim_net_bps']:+.2f}bps\n"
+            f"stocks book ${bal:,.2f}"
+        )
+    # reconciliation: a stranded position closed outside the normal entry/exit path
+    return (
+        f"\N{WARNING SIGN} <b>RECONCILED</b> {event['qty']} {sym} "
+        f"@ {event['entry_fill']:,.2f} \N{EM DASH} stranded position closed, "
+        f"${event['pnl_usd']:+.2f}\n"
+        f"stocks book ${bal:,.2f}"
+    )
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -87,6 +121,18 @@ async def main_async(args: argparse.Namespace) -> None:
         if args.replay:
             raise SystemExit("--trade with --replay is forbidden (orders on old data)")
         from signals.execution.alpaca_exec import PaperExecutor
+
+        creds = tg.load_env(args.env)
+        button = (tg.dashboard_button(f"{creds['DASHBOARD_BASE_URL']}/stocks_app.html")
+                  if creds.get("DASHBOARD_BASE_URL") else None)
+
+        def on_fill(event: dict) -> None:
+            # Fire-and-forget in a thread: tg.send() is a blocking HTTP call,
+            # and this hook runs synchronously on the trading path — it must
+            # never stall the websocket/capture loop waiting on Telegram.
+            asyncio.create_task(asyncio.to_thread(
+                tg.send, creds, format_blotter_line(event), reply_markup=button))
+
         trader = StocksTrader(
             executor=PaperExecutor(load_alpaca_config()),
             symbols=args.trade_symbols,  # resolved to ALL captured by resolve_args
@@ -98,7 +144,11 @@ async def main_async(args: argparse.Namespace) -> None:
             daily_loss_cap_usd=args.daily_loss_cap,
             allow_short=not args.long_only,
             book_root=".",  # persists the $50k stocks book (data/stocks_book.json)
+            on_fill=on_fill,
         )
+        with contextlib.suppress(Exception):
+            await trader.flatten_on_start()  # reconcile any stranded position (parity
+                                              # with the crypto pipeline's startup flatten)
 
     store = ColdStore(args.db)
     queue: asyncio.Queue[MarketEvent] = asyncio.Queue(maxsize=250_000)
@@ -215,7 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "what a cash account would actually capture)")
     p.add_argument("--trade", action="store_true",
                    help="place REAL paper orders for --trade-symbols (entries at "
-                        "prediction time, same simrule; refused with --replay)")
+                        "prediction time, same simrule; refused with --replay). "
+                        "Posts a real-time Telegram blotter line per fill.")
+    p.add_argument("--env", default="/home/deploy/digest.env",
+                   help="Telegram creds for the real-time blotter (only used with --trade)")
     p.add_argument("--trade-symbols", nargs="+", default=None,
                    help="symbols eligible for real orders (default: ALL captured "
                         "symbols — the simrule gate decides per-signal which are "

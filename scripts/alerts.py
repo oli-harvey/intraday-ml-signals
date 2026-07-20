@@ -1,10 +1,16 @@
-"""Push alerts to Telegram (reuses the contrafact @ContrafactBot credentials).
+"""Crypto blotter + position alerts (reuses the contrafact @ContrafactBot).
+
+This is the crypto BLOTTER: one line per real fill (what got traded, at what
+price, and why — the prediction that triggered it), plus the CRYPTO book's
+current holdings marked to market. It intentionally carries no backtest/
+research numbers — "is there an edge" lives in the nightly equities digest,
+not here (2026-07-20 messaging review: mixing those two questions into one
+message was confusing and is exactly what this split fixes).
 
 Alert on STATE TRANSITIONS only — no spam: pipeline going OFFLINE/back LIVE,
 circuit breaker tripping, order errors increasing, and new trades. A --daily
 flag sends an unconditional one-line summary (separate cron, once a day).
-State between runs lives in logs/alert_state.json. Stdlib only; cron every
-5 minutes on the server.
+State between runs lives in logs/alert_state.json. Cron every 5 minutes.
 
 Usage:
     python scripts/alerts.py --env /home/deploy/digest.env [--daily]
@@ -14,23 +20,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
-import traceback
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
+from signals import telegram as tg
 from signals.books import crypto_balance, read_stocks_pnl, stocks_balance
 
-
-def load_env(path: str) -> dict[str, str]:
-    out = {}
-    for line in Path(path).read_text().splitlines():
-        if "=" in line and not line.strip().startswith("#"):
-            key, _, value = line.partition("=")
-            out[key.strip()] = value.strip().strip('"')
-    return out
+VERB = {"buy": "BOUGHT", "sell": "SOLD"}
 
 
 def holdings_line(cur: dict) -> str:
@@ -49,7 +45,7 @@ def holdings_line(cur: dict) -> str:
     for s, p in sorted(pos.items()):
         value = p.get("value", p["qty"] * p.get("mid", p["entry"]))
         holdings_value += value
-        lines.append(f"  {p['qty']:.6g} {s.split('/')[0]} @ ${p['entry']:,.2f} "
+        lines.append(f"  {p['qty']:.6g} {tg.esc(s.split('/')[0])} @ ${p['entry']:,.2f} "
                      f"\N{RIGHTWARDS ARROW} ${value:,.2f} now")
     held = "\n" + "\n".join(lines) if lines else " none"
     cash = bal - holdings_value
@@ -65,23 +61,25 @@ def detect_alerts(prev: dict, cur: dict) -> list[str]:
     alerts = []
     if cur["fresh"] != prev.get("fresh") and prev:
         if cur["fresh"] == "offline":
-            alerts.append("\N{LARGE RED SQUARE} pipeline OFFLINE — status stopped updating")
+            alerts.append("\N{LARGE RED SQUARE} <b>pipeline OFFLINE</b> — status stopped updating")
         elif prev.get("fresh") == "offline":
-            alerts.append("\N{LARGE GREEN CIRCLE} pipeline back LIVE")
+            alerts.append("\N{LARGE GREEN CIRCLE} <b>pipeline back LIVE</b>")
     if cur["breaker"] == "TRIPPED" and prev.get("breaker") != "TRIPPED":
         alerts.append(
-            f"\N{LARGE RED SQUARE} circuit breaker TRIPPED — pnl today ${cur['pnl']:+.2f};"
-            " no new entries until UTC rollover"
+            f"\N{LARGE RED SQUARE} <b>circuit breaker TRIPPED</b> — pnl today "
+            f"${cur['pnl']:+.2f}; no new entries until UTC rollover"
         )
     if cur["order_errors"] > prev.get("order_errors", 0):
         alerts.append(f"\N{WARNING SIGN} order errors: {cur['order_errors']} (was"
                       f" {prev.get('order_errors', 0)})")
     if cur["orders"] > prev.get("orders", 0):
         last = cur.get("last_order") or {}
+        verb = VERB.get(last.get("side", ""), tg.esc(last.get("side", "?")))
         alerts.append(
-            f"\N{CHART WITH UPWARDS TREND} trade: {last.get('side', '?')}"
-            f" {last.get('qty', 0):.6g} {last.get('symbol', '?')}"
-            f" @ {last.get('price', 0):,.2f} — {last.get('note', '')[:60]}\n"
+            f"\N{CHART WITH UPWARDS TREND} <b>{verb}</b>"
+            f" {last.get('qty', 0):.6g} {tg.esc(last.get('symbol', '?'))}"
+            f" @ {last.get('price', 0):,.2f}"
+            f" \N{EM DASH} {tg.esc(str(last.get('note', ''))[:60])}\n"
             f"{holdings_line(cur)}"
         )
     return alerts
@@ -101,15 +99,6 @@ def condense(status: dict, age_s: float) -> dict:
     }
 
 
-def send(creds: dict[str, str], text: str) -> None:
-    data = urllib.parse.urlencode(
-        {"chat_id": creds["TELEGRAM_CHAT_ID"], "text": f"intraday: {text}"}
-    ).encode()
-    url = f"https://api.telegram.org/bot{creds['TELEGRAM_BOT_TOKEN']}/sendMessage"
-    with urllib.request.urlopen(url, data=data, timeout=15) as resp:
-        resp.read()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
@@ -117,7 +106,10 @@ def main() -> None:
     parser.add_argument("--daily", action="store_true", help="send summary unconditionally")
     args = parser.parse_args()
     root = Path(args.root)
-    creds = load_env(args.env)
+    creds = tg.load_env(args.env)
+    button = None
+    if creds.get("DASHBOARD_BASE_URL"):
+        button = tg.dashboard_button(f"{creds['DASHBOARD_BASE_URL']}/trading.html")
 
     try:
         status = json.loads((root / "data" / "status.json").read_text())
@@ -136,31 +128,22 @@ def main() -> None:
     cur["crypto_book"] = crypto_balance(cur["equity"], spnl)
     cur["stocks_book"] = stocks_balance(spnl)
 
-    # A send failure must never block the state write below (stocks_alerts.py
-    # hit exactly this: one malformed message 400'd, aborted main() before the
-    # state file updated, and the cron re-failed on the same message every 5
-    # minutes for hours). One bad message is now a logged miss, not a stuck alarm.
-    def safe_send(text: str) -> None:
-        try:
-            send(creds, text)
-        except Exception:
-            print("SEND FAILED (message dropped, state still advances):", file=sys.stderr)
-            print(text, file=sys.stderr)
-            traceback.print_exc()
-
     if args.daily:
         per_sym = status.get("per_symbol", {})
         learned = sum(m.get("n", 0) for m in per_sym.values())
-        safe_send(
-            f"daily: {cur['fresh'].upper()} · pnl ${cur['pnl']:+.2f}"
-            f" · orders {cur['orders']} · {learned:,.0f} samples learned\n"
+        tg.send(
+            creds,
+            f"<b>daily</b>: {cur['fresh'].upper()} \N{MIDDLE DOT} pnl ${cur['pnl']:+.2f}"
+            f" \N{MIDDLE DOT} orders {cur['orders']} \N{MIDDLE DOT} "
+            f"{learned:,.0f} samples learned\n"
             f"{holdings_line(cur)}\n"
             f"stocks book ${cur['stocks_book']:,.2f} "
             f"(acct ${status.get('equity', 0):,.2f})",
+            reply_markup=button,
         )
     else:
         for alert in detect_alerts(prev, cur):
-            safe_send(alert)
+            tg.send(creds, alert, reply_markup=button)
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(cur))
