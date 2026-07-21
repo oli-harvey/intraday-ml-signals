@@ -1126,3 +1126,54 @@ system at all — it is long-only index exposure (QQQ) with a once-daily SMA tre
 0 day trades, ~4-14 trades/yr, costs in cents, at most ONE quiet Telegram message a day,
 and 5 years of daily data behind it instead of 6 sessions. The intraday-ML research
 continues as research (capture + shadow book + tally), separated from money.
+
+### 2026-07-22 — MODEL sweep FULL CONFIRM (6 sessions, 8 phases): nothing beats `ev`. The wall is not a model-choice artifact.
+
+Completion of the 07-21 model review ("is the modelling algorithm the problem — can't we
+find something better?"). All candidates, same discipline (`scripts/model_sweep.py`,
+phase-swept 8, dz4 spread<2bp, 5s, all 6 clean sessions):
+
+| sym | model | net (phase-mean) | ±phase | net/±ph | d-best | trades | sess>0 |
+|-----|-------|------------------|--------|---------|--------|--------|--------|
+| NVDA | **ev (tracked)** | +2.71 | 4.14 | **0.65** | +0.057 | 145 | 6/6 |
+| NVDA | adaptive | +1.13 | 1.56 | 0.73 | −0.007 | 482 | 6/6 |
+| NVDA | hoeffding | +1.31 | 1.91 | 0.69 | ~0 | 415 | 5/6 |
+| NVDA | meta | +1.79 | 2.71 | 0.66 | ~0 | 224 | 6/6 |
+| NVDA | ev_tree | +1.57 | 6.43 | 0.24 | +0.134 | 23 | 5/6 |
+| AAPL | **ev (tracked)** | +1.74 | 2.18 | **0.80** | +0.029 | 69 | 6/6 |
+| AAPL | hoeffding | +0.89 | 1.52 | 0.59 | ~0 | 208 | 5/6 |
+| AAPL | meta | +1.16 | 2.12 | 0.55 | ~0 | 106 | 5/6 |
+| AAPL | adaptive | +0.44 | 1.79 | 0.25 | −0.002 | 220 | 5/6 |
+| AAPL | ev_tree | +1.34 | 6.81 | 0.20 | +0.088 | 10 | 5/6 |
+| (both) | forest, linear | dropped after lean screen: no promise / consistently negative | | | | | |
+
+**Verdict: the tracked `ev` remains the best config on the pre-stated bar (clear net/±ph>1
+AND beat ev by a real margin — nothing does either).** Three specific outcomes worth the ink:
+
+1. **`ev_tree` (my 07-21 candidate): refuted.** It wins on the synthetic kink it was
+   designed for and loses on real data — ultra-selective (10-23 trades/session vs ev's
+   69-145), phase-fragile (±6.4-6.8). Noted, not chased: its d-best is the highest ever
+   measured (+0.134 NVDA) — direction WHEN it commits is real, but it commits ~15x too
+   rarely for the net to rise above phase noise. A selectivity/coverage trade-off, not a
+   better model.
+2. **`adaptive`: the lean screen's NVDA 3.92 collapsed to 0.73 on the full run, d-best
+   NEGATIVE.** Its positive net is cadence/trade-count structure, not directional skill.
+   This is the third time this project's lean→full protocol has caught exactly this
+   shrinkage (AAPL 2-session 1.55→0.91→0.80; now this). The protocol is doing its job.
+3. `ev`'s full-run numbers reproduce RESEARCH 07-16 to the decimal — deterministic replay
+   verified end-to-end again.
+
+**Ops lessons (both self-inflicted, both now guarded):** (a) River's tree
+memory-estimation ZeroDivisions when drift-pruning empties a HoeffdingAdaptiveTree —
+killed the first 8h run; `memory_estimate_period` pushed out of reach on every tree kind.
+(b) Running 5 sweep processes in PARALLEL on the same session DBs made DuckDB spill to
+the SAME per-database `.tmp` directory and they corrupted each other's temp files
+(hoeffding/meta died on 07-14) — replays of a shared DB must run sequentially, or copy
+the DB per process. The incremental `[partial]`-line output added after crash (a) meant
+crash (b) lost only one session per model instead of everything.
+
+**Closes the model-algorithm question: the equities wall (net/±ph < 1 on every config)
+holds across seven model families and is a property of the signal-vs-cost structure, not
+of the learner.** Active levers remaining: none. The pre-registered kill/continue rule and
+the capture/shadow-book tally continue unattended; real-money strategy work has moved to
+the $100 long-only study (07-21 evening entry).
