@@ -33,13 +33,15 @@ STATUS = {
         "balance": 49_982.37, "cash": 49_982.37, "holdings_value": 905.0,
         "pnl_cum": -17.63, "pnl_usd": -17.63, "trades": 197, "order_errors": 6,
         "reconciliations": 0, "sim_gap_bps": -4.81,
+        "entry_slippage_bps": -1.3, "avg_round_trip_latency_s": 2.1,
         "open_detail": {
             "NVDA": {"side": "long", "qty": 1, "entry_fill": 899.10,
                      "mid": 905.0, "value": 905.0, "unrealized_usd": 5.90},
         },
         "recent": [
             {"symbol": "AAPL", "side": "short", "qty": 3, "entry_fill": 200.0,
-             "exit_fill": 199.0, "pnl_usd": 3.0, "pred_bps": -12.0},
+             "exit_fill": 199.0, "pnl_usd": 3.0, "pred_bps": -12.0,
+             "entry_slippage_bps": -0.8, "entry_latency_s": 1.7},
             {"symbol": "MSFT", "side": "short", "qty": -2, "entry_fill": 391.6,
              "exit_fill": 393.0, "pnl_usd": -2.8, "pred_bps": float("nan"),
              "reconciliation": True},
@@ -73,6 +75,19 @@ def test_populated_render_shows_blotter_positions_and_research(tmp_path):
     assert "905.00" in out  # marked-to-market position value
     assert "reconciliation" in out.lower()  # flagged, not hidden
     assert "BACKTEST, not real trades" in out  # research clearly labelled
+
+
+def test_populated_render_shows_entry_slippage_and_latency(tmp_path):
+    """2026-07-21: 1-2.4s real Alpaca fill latency was found by manual
+    server-side investigation of a handful of trades — must be visible on
+    the dashboard, not something that has to be re-derived again."""
+    _write_status(tmp_path)
+    out = gsa.render(tmp_path)
+    assert "entry slippage" in out.lower()
+    assert "-1.30bps" in out  # aggregate entry_slippage_bps tile
+    assert "2.1s" in out      # avg_round_trip_latency_s
+    assert "-0.80" in out     # per-trade slippage in the blotter row
+    assert "1.7s" in out      # per-trade latency in the blotter row
 
 
 def test_render_is_idempotent_across_repeated_calls(tmp_path):

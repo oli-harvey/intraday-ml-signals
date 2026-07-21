@@ -67,7 +67,8 @@ def format_blotter_line(event: dict) -> str:
         return (
             f"\N{OUTBOX TRAY} <b>{verb}</b> {event['qty']} {sym} "
             f"@ {event['exit_fill']:,.2f} \N{EM DASH} net {event['net_bps']:+.2f}bps "
-            f"(${event['pnl_usd']:+.2f}) vs sim {event['sim_net_bps']:+.2f}bps\n"
+            f"(${event['pnl_usd']:+.2f}) vs sim {event['sim_net_bps']:+.2f}bps "
+            f"\N{MIDDLE DOT} slippage {event['entry_slippage_bps']:+.2f}bps\n"
             f"stocks book ${bal:,.2f}"
         )
     # reconciliation: a stranded position closed outside the normal entry/exit path

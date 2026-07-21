@@ -88,6 +88,16 @@ def test_position_line_shows_open_positions_marked_to_market():
     assert "total $50,098.60" in line
 
 
+def test_position_line_reports_entry_slippage_and_latency():
+    """2026-07-21: 1-2.4s real Alpaca fill latency was found via manual
+    investigation — these numbers must be visible in every position report
+    from now on, not just discoverable by re-deriving them from raw trades."""
+    line = position_line(_state(paper=_paper(
+        entry_slippage_bps=-3.4, avg_round_trip_latency_s=2.1)))
+    assert "entry slippage -3.40bps" in line
+    assert "avg round-trip latency 2.1s" in line
+
+
 def test_position_line_flags_halt_and_reconciliations():
     line = position_line(_state(paper=_paper(halted=True, reconciliations=2)))
     assert "HALTED" in line and "2 reconciliation close(s)" in line

@@ -153,8 +153,12 @@ def position_line(cur: dict) -> str:
         return "no real orders configured for this session"
     avg = paper.get("avg_net_bps", float("nan"))
     gap = paper.get("sim_gap_bps", float("nan"))
+    slip = paper.get("entry_slippage_bps", float("nan"))
+    lat = paper.get("avg_round_trip_latency_s", float("nan"))
     avg_s = f"{avg:+.2f}" if avg == avg else "—"
     gap_s = f"{gap:+.2f}" if gap == gap else "—"
+    slip_s = f"{slip:+.2f}" if slip == slip else "—"
+    lat_s = f"{lat:.1f}s" if lat == lat else "—"
     halt = " \N{MIDDLE DOT} \N{NO ENTRY} entries HALTED (loss cap)" if paper.get("halted") else ""
     recon = paper.get("reconciliations", 0)
     recon_s = f" \N{MIDDLE DOT} \N{WARNING SIGN} {recon} reconciliation close(s)" if recon else ""
@@ -176,6 +180,8 @@ def position_line(cur: dict) -> str:
         f"\N{MIDDLE DOT} ${paper.get('pnl_usd', 0.0):+.2f} \N{MIDDLE DOT} "
         f"vs-sim gap {gap_s}bps \N{MIDDLE DOT} errs {paper.get('order_errors', 0)}"
         f"{halt}{recon_s}\n"
+        f"entry slippage {slip_s}bps (signal\N{RIGHTWARDS ARROW}fill delay) "
+        f"\N{MIDDLE DOT} avg round-trip latency {lat_s}\n"
         f"stocks book ${balance:,.2f} \N{MIDDLE DOT} holdings:{held}\n"
         f"cash ${cash:,.2f} \N{MIDDLE DOT} holdings ${hv:,.2f} "
         f"\N{MIDDLE DOT} total ${total:,.2f}"

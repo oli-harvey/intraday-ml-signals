@@ -32,10 +32,11 @@ def test_exit_line_reports_the_result_and_running_balance():
     line = format_blotter_line({
         "kind": "exit", "symbol": "NVDA", "side": "long", "qty": 1,
         "exit_fill": 900.55, "net_bps": 5.0, "pnl_usd": 0.45,
-        "sim_net_bps": 3.2, "balance": 49_982.82,
+        "sim_net_bps": 3.2, "entry_slippage_bps": -1.1, "balance": 49_982.82,
     })
     assert "SOLD" in line and "900.55" in line
     assert "+5.00bps" in line and "+0.45" in line and "+3.20bps" in line
+    assert "-1.10bps" in line  # entry slippage (2026-07-21)
     assert "stocks book $49,982.82" in line
 
 
@@ -43,7 +44,7 @@ def test_exit_line_labels_covering_a_short():
     line = format_blotter_line({
         "kind": "exit", "symbol": "AAPL", "side": "short", "qty": 3,
         "exit_fill": 199.0, "net_bps": 5.0, "pnl_usd": 3.0,
-        "sim_net_bps": 2.0, "balance": 50_003.0,
+        "sim_net_bps": 2.0, "entry_slippage_bps": 0.5, "balance": 50_003.0,
     })
     assert "COVERED" in line
 

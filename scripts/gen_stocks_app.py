@@ -103,9 +103,11 @@ def load_history(hist_path: Path, window_s: float = 5 * 86_400) -> list[dict]:
 
 
 def blotter_table(trades: list[dict]) -> str:
-    """One line per fill: side, qty, price, $ P&L, and the WHY (the
-    prediction that triggered entry) — the report a real trading desk expects,
-    which nothing in this project had until now."""
+    """One line per fill: side, qty, price, $ P&L, the WHY (the prediction
+    that triggered entry), and the entry slippage/latency (2026-07-21: real
+    Alpaca fill latency of 1-2.4s was found to be corrupting the sim
+    comparison — now measured and shown per trade) — the report a real
+    trading desk expects, which nothing in this project had until now."""
     if not trades:
         return '<div class="banner sub">no trades yet this session</div>'
     rows = []
@@ -117,6 +119,8 @@ def blotter_table(trades: list[dict]) -> str:
         color = GOOD if pnl >= 0 else CRITICAL
         pred = t.get("pred_bps")
         why = f"pred {pred:+.1f}bps" if isinstance(pred, (int, float)) and pred == pred else "—"
+        lat = t.get("entry_latency_s")
+        lat_s = f"{lat:.1f}s" if isinstance(lat, (int, float)) and lat == lat else "—"
         rows.append(
             f"<tr><td>{html.escape(t.get('symbol', ''))}</td>"
             f"<td>{html.escape(t.get('side', ''))}</td>"
@@ -124,12 +128,15 @@ def blotter_table(trades: list[dict]) -> str:
             f"<td class='num'>{fmt(t.get('entry_fill'), '{:,.2f}')}</td>"
             f"<td class='num'>{fmt(t.get('exit_fill'), '{:,.2f}')}</td>"
             f"<td class='num' style='color:{color}'>{pnl:+,.2f}</td>"
+            f"<td class='num'>{fmt(t.get('entry_slippage_bps'), '{:+.2f}')}</td>"
+            f"<td class='num'>{lat_s}</td>"
             f"<td>{why}{tag}</td></tr>"
         )
     return (
         "<table><tr><td>symbol</td><td>side</td><td class='num'>qty</td>"
         "<td class='num'>entry</td><td class='num'>exit</td>"
-        f"<td class='num'>P&amp;L $</td><td>why</td></tr>{''.join(rows)}</table>"
+        "<td class='num'>P&amp;L $</td><td class='num'>slip bps</td>"
+        f"<td class='num'>latency</td><td>why</td></tr>{''.join(rows)}</table>"
     )
 
 
@@ -214,7 +221,11 @@ def render(root: Path) -> str:
              f"errors {paper.get('order_errors', 0)} · "
              f"reconciliations {paper.get('reconciliations', 0)}"),
         tile("vs-sim gap", f"{paper.get('sim_gap_bps', float('nan')):+.2f}bps",
-             "real fill net minus the backtest's assumed net"),
+             "real fill net minus the backtest's assumed net (same window, "
+             "fixed 2026-07-21)"),
+        tile("entry slippage", f"{paper.get('entry_slippage_bps', float('nan')):+.2f}bps",
+             f"signal→fill delay cost · avg round-trip "
+             f"{paper.get('avg_round_trip_latency_s', float('nan')):.1f}s"),
         tile("open positions", str(len(paper.get('open_detail', {}))),
              f"max {status.get('config', '')[:24]}"),
         tile("capture", f"{status.get('events', 0):,}",

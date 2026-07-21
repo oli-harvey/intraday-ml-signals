@@ -16,13 +16,16 @@ HN = 40_000_000  # 40ms horizon: real holds, fast tests
 
 
 class FakeExecutor:
-    """Fills every market order instantly at a scripted price."""
+    """Fills every market order at a scripted price, optionally after a fixed
+    delay — simulating the 1-2.4s real Alpaca fill latency found 2026-07-21."""
 
-    def __init__(self, prices: list[float], stranded: list[dict] | None = None):
+    def __init__(self, prices: list[float], stranded: list[dict] | None = None,
+                 poll_delay: float = 0.0):
         self.prices = list(prices)
         self.orders: list[tuple[str, str, float, str]] = []
         self.flattened: list[list[str]] | None = None
         self._stranded = stranded or []  # what flatten_symbols() reports closed
+        self._poll_delay = poll_delay
         self._i = 0
 
     async def market_order(self, symbol, side, qty, tif="gtc"):
@@ -32,6 +35,8 @@ class FakeExecutor:
         return OrderResult(f"id{self._i}", "filled", qty, px)
 
     async def poll_fill(self, order_id, attempts=10, delay_s=0.5):
+        if self._poll_delay:
+            await asyncio.sleep(self._poll_delay)
         i = int(order_id[2:])
         return OrderResult(order_id, "filled", 1, self.prices[min(i - 1, len(self.prices) - 1)])
 
@@ -311,3 +316,108 @@ def test_flatten_on_start_is_a_noop_when_already_flat():
         return tr
     tr = run(go())
     assert tr.trades == [] and tr.book_pnl_cum == 0.0
+
+
+# ---- fill latency (2026-07-21: 1-2.4s real Alpaca fill latency found) --------
+
+def test_entry_latency_is_measured_and_fill_mid_differs_from_signal_mid():
+    """The bug that produced |sim_gap| up to ~90bps on individual trades: the
+    old code compared mid-AT-SIGNAL to mid-AT-EXIT, a window inflated by
+    however long the fill took to confirm. fill_mid must be captured AT FILL
+    CONFIRMATION, separately from signal_mid. Uses a horizon much longer than
+    the fill delay so there's a safe window to inspect open_pos mid-hold
+    (entry confirmed, exit not yet submitted) without a timing race."""
+    async def go():
+        ex = FakeExecutor([900.10, 900.55], poll_delay=0.03)
+        tr = make(ex, horizon_ns=int(0.3 * 1e9))
+        tr.on_prediction(pred(mid=900.0))  # signal_mid = 900.0
+        await asyncio.sleep(0.01)  # entry order in flight, not yet confirmed
+        # price moves while the order is in flight — updates last_mid (allowed
+        # unconditionally in on_prediction) without spawning a duplicate entry
+        # (already pending for NVDA)
+        tr.on_prediction(pred(ts=1, mid=905.0))
+        await asyncio.sleep(0.08)  # entry now confirmed (~0.03s); still mid-hold
+        pos = tr.open_pos["NVDA"]
+        return pos
+    pos = run(go())
+    assert pos.signal_mid == 900.0
+    assert pos.fill_mid == 905.0  # captured at confirmation, NOT at signal
+    assert pos.entry_latency_s >= 0.025  # ~= the poll_delay
+
+
+def test_sim_net_bps_uses_fill_mid_not_signal_mid():
+    async def go():
+        ex = FakeExecutor([900.10, 900.55], poll_delay=0.02)
+        tr = make(ex)
+        tr.on_prediction(pred(mid=900.0, predicted=0.0010))  # long, signal_mid=900
+        await asyncio.sleep(0.005)
+        tr.on_prediction(pred(ts=1, mid=950.0))  # big jump WHILE entry is in flight
+        await asyncio.sleep(HN / 1e9 + 0.05)
+        return tr.trades[0]
+    t = run(go())
+    # if sim_net still used signal_mid=900 -> mid_now=950, it would show a huge
+    # ~+555bps move that never happened to the real trade. Using fill_mid=950
+    # (captured at confirmation) against mid_now (~950, little further movement
+    # simulated here) keeps sim_net sane and comparable to the real net_bps.
+    assert abs(t["sim_net_bps"]) < 50, t  # sane, not a several-hundred-bps artifact
+
+
+def test_entry_slippage_bps_reports_the_signal_to_fill_move():
+    """entry_slippage_bps is the HONEST cost of the delay: side * (entry_fill
+    price - signal_mid) / signal_mid — reported separately from sim_gap."""
+    async def go():
+        ex = FakeExecutor([900.10, 900.55])  # entry fills at 900.10
+        tr = make(ex)
+        tr.on_prediction(pred(mid=900.0, predicted=0.0010))  # long, signal_mid=900.0
+        await asyncio.sleep(HN / 1e9 + 0.05)
+        return tr.trades[0]
+    t = run(go())
+    expected = (900.10 - 900.0) / 900.0 * 1e4  # long: side=+1
+    assert abs(t["entry_slippage_bps"] - expected) < 1e-6
+
+
+def test_hold_duration_is_compensated_for_measured_entry_latency():
+    """Total elapsed from the signal to the exit FIRING must track the
+    HORIZON from the SIGNAL, not horizon-after-a-late-fill — otherwise every
+    trade already runs longer than the researched 5s regime before the hold
+    timer even starts (2026-07-21). Measures actual fire times via on_fill
+    (not a guessed sleep window, which would only measure how long the test
+    chose to wait, not when the exit really happened)."""
+    horizon_s = 0.15
+    latency_s = 0.06  # 40% of the horizon — comparable to the real 1-2s/5s ratio
+    times: dict[str, float] = {}
+    async def go():
+        ex = FakeExecutor([900.10, 900.55], poll_delay=latency_s)
+        loop = asyncio.get_event_loop()
+        t0 = loop.time()
+        def on_fill(event):
+            times[event["kind"]] = loop.time() - t0
+        tr = make(ex, horizon_ns=int(horizon_s * 1e9), on_fill=on_fill)
+        tr.on_prediction(pred(mid=900.0, predicted=0.0010))
+        await asyncio.sleep(horizon_s + 2 * latency_s + 0.1)  # generous margin
+        return tr.trades[0]["entry_latency_s"]
+    measured_latency = run(go())
+    # entry fires ~latency_s after signal; exit fires ~latency_s (entry fill)
+    # + (horizon_s - latency_s) (compensated hold) + latency_s (exit fill)
+    # = horizon_s + latency_s after signal — NOT horizon_s + 2*latency_s,
+    # which an uncompensated hold would produce.
+    assert abs(times["entry"] - latency_s) < 0.03, times
+    assert abs(times["exit"] - (horizon_s + latency_s)) < 0.05, times
+    assert abs(measured_latency - latency_s) < 0.03
+
+
+def test_trades_are_persisted_to_a_durable_jsonl(tmp_path):
+    """summary()['recent'] only keeps the last 10 — exactly what made the
+    latency bug take a manual server-side investigation instead of a
+    five-minute query against a real log."""
+    import json
+    async def go():
+        ex = FakeExecutor([900.10, 900.55])
+        tr = make(ex, book_root=str(tmp_path))
+        tr.on_prediction(pred())
+        await asyncio.sleep(HN / 1e9 + 0.05)
+    run(go())
+    lines = (tmp_path / "logs" / "stocks_trades.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["symbol"] == "NVDA" and "entry_latency_s" in row and "ts" in row

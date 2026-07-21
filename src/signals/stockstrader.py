@@ -28,14 +28,36 @@ live.py) can post a real-time trade blotter ("what got traded, why, and what's
 the cumulative position now") instead of only the periodic heartbeat. Called
 SYNCHRONOUSLY on the trading path: it must not block (schedule any I/O, e.g. a
 Telegram send, as its own task) or it will stall the round-trip loop.
+
+FILL LATENCY (2026-07-21, found while reviewing the first two real sessions):
+entry orders on this Alpaca paper account took 1-2.4s to confirm — 20-48% of the
+5s horizon. Two consequences, both fixed here:
+  1. The old sim_net_bps compared mid-AT-SIGNAL to mid-AT-EXIT, a window inflated
+     by the latency, while the real net_bps correctly measures fill-to-fill. For
+     a reversion signal that window mismatch alone produced comparisons wildly
+     unrelated to the real trade (observed |gap| up to ~90bps on individual
+     trades — many times the entire edge being chased). Fixed by comparing
+     mid-AT-FILL to mid-AT-EXIT instead: same window on both sides.
+  2. The true cost of the delay — how much the price moved between deciding to
+     trade and actually being filled — is a REAL cost of live execution, not a
+     comparison bug. It is now reported honestly as its own metric,
+     entry_slippage_bps, instead of being silently baked into a wrong sim_gap.
+  3. The hold time is now `horizon - measured entry latency` (floored at 0), so
+     the exit fires close to horizon_ns after the SIGNAL as designed, instead of
+     horizon_ns after the (delayed) fill — otherwise every trade was already
+     running ~1-2s longer than the researched 5s regime before the hold timer
+     even started.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import books, simrule
 from .core import Prediction
@@ -49,10 +71,12 @@ class OpenPosition:
     side: float  # +1 long, -1 short
     qty: int
     entry_fill: float
-    signal_mid: float
+    signal_mid: float       # mid AT THE SIGNAL — basis for entry_slippage_bps
+    fill_mid: float         # mid AT ENTRY-FILL CONFIRMATION — basis for sim_net_bps
     signal_spread_bps: float
     pred_bps: float
     entry_ns: int
+    entry_latency_s: float  # wall-clock: order submit -> fill confirmed
 
 
 @dataclass
@@ -84,6 +108,22 @@ class StocksTrader:
     def __post_init__(self) -> None:
         if self.book_root is not None:
             self.book_pnl_cum = books.read_stocks_pnl(self.book_root)
+
+    def _persist_trade(self, trade: dict) -> None:
+        """Append every trade to a durable JSONL — the `recent` list in
+        summary() only keeps the last 10, which is exactly what made the
+        latency bug above take a manual server-side investigation to find
+        instead of a five-minute query. Best-effort: a logging failure must
+        never affect real order handling."""
+        if self.book_root is None:
+            return
+        try:
+            path = Path(self.book_root) / "logs" / "stocks_trades.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
+                fh.write(json.dumps({"ts": time.time(), **trade}) + "\n")
+        except OSError:
+            log.warning("could not persist trade record", exc_info=True)
 
     def _notify(self, kind: str, **fields: object) -> None:
         """Fire the blotter hook, if any. Never let a hook failure reach the
@@ -140,6 +180,7 @@ class StocksTrader:
     # ---- order path (off the hot loop) --------------------------------------
     async def _round_trip(self, sym: str, direction: float, qty: int, p: Prediction) -> None:
         try:
+            t_submit = time.monotonic()
             res = await self.executor.market_order(
                 sym, "buy" if direction > 0 else "sell", qty, tif="day")
             self.orders += 1
@@ -148,18 +189,27 @@ class StocksTrader:
                 self.order_errors += 1
                 log.warning("entry not filled: %s %s -> %s", sym, direction, res.status)
                 return
+            entry_latency_s = time.monotonic() - t_submit
+            # mid AT FILL CONFIRMATION (not at signal) — the fair reference point
+            # for sim_net_bps in _exit(), which must compare the SAME window the
+            # real trade lived through, not one inflated by fill latency.
+            fill_mid = self.last_mid.get(sym, res.filled_avg_price)
             self.open_pos[sym] = OpenPosition(
                 side=direction, qty=int(res.filled_qty),
-                entry_fill=res.filled_avg_price, signal_mid=p.mid,
+                entry_fill=res.filled_avg_price, signal_mid=p.mid, fill_mid=fill_mid,
                 signal_spread_bps=p.spread_bps, pred_bps=p.predicted * 1e4,
-                entry_ns=p.ts_ns,
+                entry_ns=p.ts_ns, entry_latency_s=entry_latency_s,
             )
             self._notify(
                 "entry", symbol=sym, side="long" if direction > 0 else "short",
                 qty=int(res.filled_qty), price=res.filled_avg_price,
-                pred_bps=p.predicted * 1e4,
+                pred_bps=p.predicted * 1e4, entry_latency_s=entry_latency_s,
             )
-            await asyncio.sleep(self.horizon_ns / 1e9)  # hold for the horizon
+            # Hold for horizon MINUS what fill confirmation already cost us, so
+            # the exit fires ~horizon_ns after the SIGNAL as designed — not
+            # horizon_ns after a fill that itself arrived 1-2s late (2026-07-21).
+            hold_s = max(0.0, self.horizon_ns / 1e9 - entry_latency_s)
+            await asyncio.sleep(hold_s)
             await self._exit(sym)
         except Exception:
             self.order_errors += 1
@@ -170,6 +220,7 @@ class StocksTrader:
 
     async def _exit(self, sym: str) -> None:
         pos = self.open_pos[sym]
+        t_submit = time.monotonic()
         res = await self.executor.market_order(
             sym, "sell" if pos.side > 0 else "buy", pos.qty, tif="day")
         self.orders += 1
@@ -179,30 +230,43 @@ class StocksTrader:
             log.warning("exit not confirmed for %s (%s) — position may be stranded "
                         "until close_all sweeps it", sym, res.status)
             return
+        exit_latency_s = time.monotonic() - t_submit
         exit_px = res.filled_avg_price
         net_bps = pos.side * (exit_px - pos.entry_fill) / pos.entry_fill * 1e4
         pnl_usd = pos.side * (exit_px - pos.entry_fill) * pos.qty
-        # frictionless-sim counterpart of THIS trade: mid at signal -> mid now,
-        # charged the quoted spread — what the backtest/shadow book would book.
+        # Frictionless-sim counterpart of THIS trade, same WINDOW as the real
+        # trade lived through: mid AT FILL (not at signal — that window is
+        # inflated by entry latency, see module docstring) -> mid now.
         mid_now = self.last_mid.get(sym, exit_px)
-        sim_net = (pos.side * (mid_now - pos.signal_mid) / pos.signal_mid * 1e4
+        sim_net = (pos.side * (mid_now - pos.fill_mid) / pos.fill_mid * 1e4
                    - pos.signal_spread_bps)
+        # entry_slippage_bps: the REAL cost of the delay between deciding to
+        # trade and the order actually filling — a genuine execution cost, kept
+        # separate from sim_gap so the two questions ("is our cost model
+        # right?" vs "how much does fill latency cost?") never conflate again.
+        entry_slippage_bps = (
+            pos.side * (pos.entry_fill - pos.signal_mid) / pos.signal_mid * 1e4
+        )
         self.realized_usd += pnl_usd
         self.book_pnl_cum += pnl_usd
         if self.book_root is not None:
             books.write_stocks_pnl(self.book_pnl_cum, self.book_root)
-        self.trades.append({
+        trade = {
             "symbol": sym, "ts_ns": pos.entry_ns,
             "side": "long" if pos.side > 0 else "short", "qty": pos.qty,
             "pred_bps": pos.pred_bps, "entry_fill": pos.entry_fill,
             "exit_fill": exit_px, "net_bps": net_bps, "pnl_usd": pnl_usd,
             "sim_net_bps": sim_net, "spread_bps": pos.signal_spread_bps,
-        })
+            "entry_slippage_bps": entry_slippage_bps,
+            "entry_latency_s": pos.entry_latency_s, "exit_latency_s": exit_latency_s,
+        }
+        self.trades.append(trade)
+        self._persist_trade(trade)
         self._notify(
             "exit", symbol=sym, side="long" if pos.side > 0 else "short",
             qty=pos.qty, entry_fill=pos.entry_fill, exit_fill=exit_px,
             net_bps=net_bps, pnl_usd=pnl_usd, sim_net_bps=sim_net,
-            pred_bps=pos.pred_bps,
+            entry_slippage_bps=entry_slippage_bps, pred_bps=pos.pred_bps,
         )
         if self.realized_usd <= -self.daily_loss_cap_usd:
             self.halted = True
@@ -240,14 +304,18 @@ class StocksTrader:
             if self.book_root is not None:
                 books.write_stocks_pnl(self.book_pnl_cum, self.book_root)
             net_bps = (pnl / (abs(qty) * entry) * 1e4) if qty and entry else float("nan")
-            self.trades.append({
+            trade = {
                 "symbol": c["symbol"], "ts_ns": 0,
                 "side": "long" if qty > 0 else "short", "qty": abs(qty),
                 "pred_bps": float("nan"), "entry_fill": entry,
                 "exit_fill": float("nan"), "net_bps": net_bps,
                 "pnl_usd": pnl, "sim_net_bps": float("nan"),
                 "spread_bps": float("nan"), "reconciliation": True,
-            })
+                "entry_slippage_bps": float("nan"),
+                "entry_latency_s": float("nan"), "exit_latency_s": float("nan"),
+            }
+            self.trades.append(trade)
+            self._persist_trade(trade)
             self._notify(
                 "reconciliation", symbol=c["symbol"],
                 side="long" if qty > 0 else "short", qty=abs(qty),
@@ -264,6 +332,8 @@ class StocksTrader:
         n = len(real)
         nets = [t["net_bps"] for t in real]
         gaps = [t["net_bps"] - t["sim_net_bps"] for t in real]
+        slips = [t["entry_slippage_bps"] for t in real]
+        lats = [t["entry_latency_s"] + t["exit_latency_s"] for t in real]
         balance = books.stocks_balance(self.book_pnl_cum)  # the $50k book
 
         # open positions MARKED TO the latest quote (self.last_mid), so the book
@@ -291,8 +361,12 @@ class StocksTrader:
             "cash": cash,
             "holdings_value": holdings_value,
             "total": cash + holdings_value,  # == balance; shown for the "together" view
-            # negative gap = reality pays more toll than the sim charges
+            # negative gap = the cost model is wrong (fixed 2026-07-21 to compare
+            # the SAME window on both sides — see module docstring)
             "sim_gap_bps": (sum(gaps) / n) if n else float("nan"),
+            # negative = fill latency costs us bps, separate from the cost model
+            "entry_slippage_bps": (sum(slips) / n) if n else float("nan"),
+            "avg_round_trip_latency_s": (sum(lats) / n) if n else float("nan"),
             "orders": self.orders,
             "order_errors": self.order_errors,
             "reconciliations": len(self.trades) - n,  # stranded closes, see note above

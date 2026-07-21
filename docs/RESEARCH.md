@@ -1008,3 +1008,55 @@ so the small pre-split loss (~$70) is attributed to crypto and the stocks book o
 exactly $50k. Invariant by construction: books sum to account equity. All bot messages now
 report per-book: crypto trade alerts + daily show the crypto book, stocks heartbeats/close +
 nightly digest show the stocks book.
+
+## 2026-07-21 — real fills, two sessions in: sim_gap looked catastrophic (-14bps). It wasn't.
+
+"Review models, results so far, improve" (Oli). First look at the real book after 07-20/07-21:
+298 trades, avg net **-1.35bps**, `sim_gap_bps` **-14.13bps** — over 5x the entire edge ever
+being chased. Individual trades showed the tell before the aggregate did: `recent` trades had
+sim_net_bps values of −92.53, +76.37, −53.12 bps on a 5s horizon signal that has never
+measured more than a few bps — an impossible magnitude, not a real cost.
+
+**Root cause, found via Alpaca's own order timestamps (`submitted_at`/`filled_at`):** entry
+orders on this paper account take **1-2.4 seconds** to confirm — 20-48% of the entire 5s
+horizon. The old `sim_net_bps` compared mid-AT-SIGNAL to mid-AT-EXIT, a window silently
+inflated by however long that fill took; `net_bps` (real) correctly measured fill-to-fill.
+For a reversion signal, that window mismatch alone produces comparisons unrelated to the real
+trade — exactly the wild swings observed. **This was a measurement-methodology bug, not
+evidence the strategy is 5x worse than believed** — the same discipline this project applies
+to everything else, now applied to itself.
+
+**Fixed (`signals/stockstrader.py`):**
+1. `sim_net_bps` now compares mid-AT-FILL-CONFIRMATION to mid-AT-EXIT — the same window the
+   real trade lived through. Apples to apples.
+2. The genuine cost of the delay — how far price moved between the signal and the confirmed
+   fill — is real and is now its own honest metric, `entry_slippage_bps`, never again baked
+   into a comparison bug.
+3. Hold duration is now `horizon - measured entry latency` (floored at 0), so the exit fires
+   ~5s after the SIGNAL as designed, not ~5s after a fill that itself arrived 1-2s late (every
+   real trade was running 7-9s total before this fix — inside the regime the horizon-sweep,
+   RESEARCH 2026-07-15, showed is strictly worse than 5s).
+4. Full per-trade history now persists to `logs/stocks_trades.jsonl` — the old `recent`
+   window (last 10) is exactly why this took a manual server-side investigation instead of a
+   query. Latency + slippage are surfaced in every report (live blotter, position line,
+   dashboard).
+
+**What this does NOT do:** retroactively fix the 298 already-recorded trades (their sim_gap
+stays wrong in history) or prove the strategy is fine — it removes a specific, confirmed
+measurement artifact. The honest open question the fix reveals: **is 1-2.4s fill latency on
+this paper account itself a structural blocker for a 5s-horizon strategy, separate from
+whether the cost model is accurate?** That's now measurable cleanly (`entry_slippage_bps`,
+`avg_round_trip_latency_s`) instead of buried in a broken comparison. Next few sessions'
+readings under the fix are the real answer, not the -14bps number above.
+
+**Model review, briefly:** the `ev` model (three online quantile regressions, pessimistic-
+quantile decision rule) is unchanged and not implicated by this bug — it's a comparison-layer
+fix, downstream of prediction. One flag while reviewing: the crypto pipeline's live
+`status.json` per-symbol `dir` (0.83-0.96 across pairs) is a *rolling, overlapping* metric —
+the same shape of number this project's own early research (2026-07-03/09) showed is inflated
+by autocorrelation on overlapping windows. It is a legitimate health/drift diagnostic, not a
+claim of that much directional skill; the properly-scored, non-overlapping, baseline-relative
+number is what `docs/RESEARCH.md`'s equities work reports (d-best), and no equivalent honest
+crypto re-score exists yet. Flagged, not actioned — no evidence pulled that crypto's live
+numbers are wrong, only that they're the same *kind* of number this project already knows not
+to trust at face value without the non-overlapping correction.
