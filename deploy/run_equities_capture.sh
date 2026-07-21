@@ -43,15 +43,14 @@ ls -1t data/equities_2*.duckdb 2>/dev/null | tail -n +31 | xargs -r rm -f
 # Recompute duration after the wait so a slow start can't overrun the close.
 dur=$(( close_et - $(date +%s) )); [ "$dur" -le 0 ] && { echo "closed during wait — skip"; exit 0; }
 # stocks_live.py = record.py's capture (identical quotes -> identical DuckDB) PLUS the
-# tracked model running live on the same websocket, booking a shadow trading book,
-# PLUS (since 2026-07-18/19, Oli's call) REAL PAPER ORDERS across the WHOLE captured
-# universe — which signals are "predicted profitable" is simrule's per-signal call
-# (dead zone + spread gate), not a hand-picked list. $1000 max/position (whole
-# shares), 6 open max (order rate stays well under Alpaca's 200/min), $50 daily
-# loss cap, EOD flatten scoped to its own symbols (the account is shared with
-# crypto). Paper money only; the point is real fills vs the sim's cost model.
-# --env posts a real-time Telegram blotter line per fill (2026-07-20).
+# tracked model running live on the same websocket, booking a shadow trading book.
+# REAL PAPER ORDERS (--trade) are OFF since 2026-07-21 (Oli: "regroup and simplify"):
+# one live session answered the question they were turned on to ask — 356 round
+# trips, gross direction 47.5% (coin flip), every prediction-size bucket negative,
+# -$47.49 on the day, book halted at the $50 cap. The 5s-horizon strategy has no
+# live edge over its ~1.5bp cost toll. Capture + shadow book continue unchanged
+# (the data asset and the pre-registered n=15 tally keep accruing); re-enable
+# --trade only with a NEW strategy that clears the bar in backtest first.
 exec .venv/bin/python scripts/stocks_live.py \
   --symbols $SYMBOLS --duration "$dur" --db "$db" \
-  --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2 \
-  --trade --notional 1000 --max-open 6 --daily-loss-cap 50 --env "$HOME/digest.env"
+  --model ev --horizon-s 5 --dead-zone-bps 4 --max-spread-bps 2
