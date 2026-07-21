@@ -1060,3 +1060,69 @@ number is what `docs/RESEARCH.md`'s equities work reports (d-best), and no equiv
 crypto re-score exists yet. Flagged, not actioned — no evidence pulled that crypto's live
 numbers are wrong, only that they're the same *kind* of number this project already knows not
 to trust at face value without the non-overlapping correction.
+
+## 2026-07-21 (evening) — REGROUP (Oli): one live day answered the question. Trading OFF, crypto OFF.
+
+Oli: "regroup, review what we have seen and simplify. turn off crypto unless you can find a
+better algorithm. for stocks review the trading which lost money and think about why. come
+back tomorrow with a strategy that doesnt use short selling and simulate the best option if
+i had put 100 dollars of real money in."
+
+**The loss autopsy (356 real round trips, one full session, logs/stocks_trades.jsonl):**
+avg net **-1.53bps**, win rate 16.3%, -$47.49 on the day, halted at the $50 cap. The
+decomposition is unambiguous:
+
+- **Gross direction (before costs) = 47.5% — a coin flip.** The live model called direction
+  no better than chance.
+- **Long and short lost identically** (-1.59 vs -1.48bps): shorting was NOT the problem;
+  direction was.
+- **Prediction magnitude was anti-informative**: |pred| 4-6bps bucket lost -1.27; 12+bps
+  bucket lost -1.95. Bigger conviction, bigger loss.
+- The loss mechanism is the toll: ~1bp spread + ~0.7bp measured entry slippage against a
+  ±1-2bp 5s move — the backtest's own verdict (net/±ph 0.65-0.80, never above 1) played out
+  live, at ~-$0.13/trade × 356 trades. sim_gap under the fixed measurement was ~+1bp: the
+  sim was honest; the STRATEGY has no live edge over its costs.
+
+**Actions taken (all live on the server):** crypto pipeline stopped + disabled (its exit
+flatten worked — BTC closed at 20:32:28Z; book -$130 lifetime, no honest re-scored edge, per
+Oli's conditional), 4 crypto crons commented out; stocks `--trade` REMOVED from
+run_equities_capture.sh (d518b92) — capture + shadow book + nightly screen continue, the
+n=15 tally keeps accruing, real orders require a strategy that clears the bar in backtest
+first. EOD-flatten defect found during shutdown: the 20:00:00Z close was missed by 4s and 4
+positions (NVDA/SPY/QQQ/UBER) carried into after-hours "accepted" limbo — flattened manually
+via extended-hours marketable limits; account fully flat. Telegram flood (~700 msgs/day =
+2/round-trip × 356) dies with --trade.
+
+**Model sweep status:** lean screen (2 sessions, 3 phases, PRELIMINARY): ev_tree is
+phase-fragile junk (NVDA ±8.72, 14 trades); `adaptive` the only interesting line (NVDA
+net/±ph 3.92 on 404 trades — but d-best ≤ 0, so its net may be cadence luck, not skill).
+Full 6-session confirm crashed 8h in on a River bug (HoeffdingAdaptiveTree
+`_estimate_model_size` ZeroDivision when drift-pruning empties the tree) — patched
+(memory_estimate_period pushed out of reach), restarted as 5 crash-proof single-model runs
+with incremental output. Results pending; nothing is a finding yet.
+
+**The $100 long-only study (5y daily bars ×10 symbols + 1y 5-min, Alpaca SIP; costs =
+half-spread per side from OUR OWN capture medians + SEC fee; PDT modeled):** the real
+constraints at $100 — PDT (max 3 day trades/5 days under $25k) and cost-per-trade vs
+dollar-edge ((2bp on $100 = $0.002/trade) — make EVERY intraday-ML-style strategy
+structurally impossible with real money at this size, independent of whether the edge
+exists. What survives, with real n (1,260 days):
+
+| strategy ($100, 5y) | final $ | CAGR | maxDD | t | day-trades/wk | PDT-legal |
+|---|---|---|---|---|---|---|
+| bh QQQ | $197 | 14.4% | -35.6% | 1.6 | 0 | yes |
+| **sma-filter QQQ (50d)** | $184 | 13.0% | **-16.1%** | 2.0 | 0 | yes |
+| sma-filter QQQ (200d) | ~$214 | 16.4% | -13.6% | — | 0 | yes |
+| overnight-only SPY | $116 | 3.0% | -23.2% | 0.75 | 0 | yes (costs eat it) |
+| orb30 QQQ (PDT-capped) | $111 (1y) | 10.8% | -6.5% | 1.2 | ≤3 | yes (thin data) |
+
+Robustness: ALL SMA windows (20/50/100/200) positive on SPY/QQQ/NVDA — not a cherry-picked
+window; matches the trend-following literature. Per-year: the filter LAGS in up years and
+saved -22pts in 2022 — it is drawdown insurance on beta, NOT alpha, and is stated as such.
+Single names whipsaw (sma50 NVDA trailing-12m: $82 vs bh $119) — index only.
+
+**Honest bottom line for tomorrow:** at $100 real money the right strategy is not the ML
+system at all — it is long-only index exposure (QQQ) with a once-daily SMA trend filter:
+0 day trades, ~4-14 trades/yr, costs in cents, at most ONE quiet Telegram message a day,
+and 5 years of daily data behind it instead of 6 sessions. The intraday-ML research
+continues as research (capture + shadow book + tally), separated from money.

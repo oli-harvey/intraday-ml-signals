@@ -28,14 +28,21 @@ class OnlineModel:
 
         self.kind = kind
         self.band = band_bps / 1e4  # classifier dead-zone half-width (return units)
+        # River's periodic tree memory-management (_estimate_model_size) crashes with
+        # ZeroDivisionError when drift-pruning empties the tree (seen live: adaptive
+        # kind, 2026-07-21, 8h into a full sweep). Our trees stay small; push the
+        # check out of reach instead of managing memory we don't need managed.
+        _no_mem_check = 10**12
         if kind == "linear":
             self._model = linear_model.LinearRegression(optimizer=optim.SGD(0.01))
         elif kind == "hoeffding":
-            self._model = tree.HoeffdingTreeRegressor(grace_period=200)
+            self._model = tree.HoeffdingTreeRegressor(
+                grace_period=200, memory_estimate_period=_no_mem_check)
         elif kind == "classifier":
             # 3-class: -1 (down through band) / 0 (dead-zone) / +1 (up through band).
             # Aligns the objective with the trade decision: only tail precision matters.
-            self._model = tree.HoeffdingTreeClassifier(grace_period=200)
+            self._model = tree.HoeffdingTreeClassifier(
+                grace_period=200, memory_estimate_period=_no_mem_check)
             self._tail_mean = 0.0  # online mean of |realized| in the tails
             self._tail_n = 0
         elif kind == "meta":
@@ -43,13 +50,15 @@ class OnlineModel:
             # and magnitude; a logistic gate learns P(primary sign is correct | features,
             # primary confidence) and scales the output by max(0, 2p-1) — signals the
             # gate distrusts are zeroed, so the threshold policy never sees them.
-            self._model = tree.HoeffdingTreeRegressor(grace_period=200)
+            self._model = tree.HoeffdingTreeRegressor(
+                grace_period=200, memory_estimate_period=_no_mem_check)
             self._gate = linear_model.LogisticRegression()
         elif kind == "adaptive":
             # Hoeffding tree with ADWIN drift detection: subtrees are replaced
             # when their error distribution shifts — regime changes handled by
             # the model instead of hoped away.
-            self._model = tree.HoeffdingAdaptiveTreeRegressor(grace_period=200, seed=1)
+            self._model = tree.HoeffdingAdaptiveTreeRegressor(
+                grace_period=200, seed=1, memory_estimate_period=_no_mem_check)
         elif kind == "forest":
             # Adaptive Random Forest: bagged adaptive trees + per-tree drift
             # detectors. ~10x the compute of one tree — still micro-seconds,
@@ -86,6 +95,7 @@ class OnlineModel:
             self._quantiles = {
                 q: tree.HoeffdingTreeRegressor(
                     grace_period=200, leaf_prediction="model",
+                    memory_estimate_period=_no_mem_check,
                     leaf_model=linear_model.LinearRegression(
                         optimizer=optim.SGD(0.05), loss=optim.losses.Quantile(alpha=q)
                     ),

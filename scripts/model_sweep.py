@@ -102,6 +102,12 @@ async def main() -> None:
                     stats.mean(nets), max(nets) - min(nets),
                     seg.dir_acc - seg.dir_best_baseline, int(stats.mean(trades)),
                 ))
+                # incremental partial line, flushed: an 8h run crashed once
+                # (River tree bug) and lost EVERYTHING because output was
+                # end-only. Partials must survive a crash.
+                print(f"[partial] {sym} {model_kind} {db}: net={stats.mean(nets):.2f} "
+                      f"±ph={max(nets) - min(nets):.2f} trades={int(stats.mean(trades))}",
+                      flush=True)
 
     tag = "LEAN PRELIMINARY SCREEN — do not cite as a finding" if args.lean else "FULL CONFIRM"
     print(f"\nMODEL SWEEP ({tag}) — {args.horizon_s:g}s, phase-swept ({phases_n} phases), "
