@@ -73,6 +73,26 @@ class OnlineModel:
                 for q in (0.25, 0.5, 0.75)
             }
             self._model = self._quantiles[0.5]  # median, for generic metrics paths
+        elif kind == "ev_tree":
+            # Same EV decision rule (pessimistic-quantile), but each quantile
+            # head is a Hoeffding tree with a QUANTILE-LOSS LINEAR MODEL AT THE
+            # LEAF (leaf_prediction="model") instead of a single global linear
+            # fit. The tree's splits capture nonlinear feature interactions
+            # ("ev" is linear-only, everywhere); each leaf still fits its own
+            # calibrated quantile, so the EV abstention logic is unchanged.
+            # (2026-07-21 model review — smoke-tested: leaf quantiles stay
+            # correctly monotone q25<q50<q75 across regions and the tree finds
+            # a synthetic kink a linear model can't.)
+            self._quantiles = {
+                q: tree.HoeffdingTreeRegressor(
+                    grace_period=200, leaf_prediction="model",
+                    leaf_model=linear_model.LinearRegression(
+                        optimizer=optim.SGD(0.05), loss=optim.losses.Quantile(alpha=q)
+                    ),
+                )
+                for q in (0.25, 0.5, 0.75)
+            }
+            self._model = self._quantiles[0.5]
         else:
             raise ValueError(f"unknown model kind: {kind}")
         self._abs_err_sum = 0.0
@@ -84,7 +104,7 @@ class OnlineModel:
         self.n_learned = 0
 
     def predict_one(self, features: dict[str, float]) -> float:
-        if self.kind == "ev":
+        if self.kind in ("ev", "ev_tree"):
             # bps-scaled internally; interface stays in return units
             q25 = float(self._quantiles[0.25].predict_one(features) or 0.0)
             q75 = float(self._quantiles[0.75].predict_one(features) or 0.0)
@@ -123,7 +143,7 @@ class OnlineModel:
         if pred != 0.0 and target != 0.0:
             self._direction.append(1.0 if (pred > 0) == (target > 0) else 0.0)
         self._pairs.append((pred, target))
-        if self.kind == "ev":
+        if self.kind in ("ev", "ev_tree"):
             # interval coverage with the CURRENT quantile heads (standard online
             # approximation): a calibrated q25/q75 pair should contain ~50% of
             # realized outcomes. Persistent deviation = miscalibrated quantiles.
@@ -137,7 +157,7 @@ class OnlineModel:
                 self._tail_n += 1
                 self._tail_mean += (abs(target) - self._tail_mean) / self._tail_n
             self._model.learn_one(features, cls)
-        elif self.kind == "ev":
+        elif self.kind in ("ev", "ev_tree"):
             for model in self._quantiles.values():
                 model.learn_one(features, target * 1e4)  # learn in bps
         elif self.kind == "meta":

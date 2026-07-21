@@ -24,6 +24,56 @@ def test_online_model_learns_linear_relationship() -> None:
     assert m["directional_acc"] > 0.8
 
 
+def test_ev_quantiles_stay_monotone_and_abstain_when_straddling_zero() -> None:
+    """kind='ev': the pessimistic-quantile decision rule only fires a nonzero
+    prediction when the WHOLE 25-75 interval sits on one side of zero."""
+    rng = np.random.default_rng(1)
+    model = OnlineModel(kind="ev")
+    for _ in range(4000):
+        a = rng.normal()
+        model.learn_one({"a": a}, 3 * a * 1e-4 + rng.normal(scale=0.2e-4))
+    q25 = model._quantiles[0.25].predict_one({"a": 2.0})
+    q75 = model._quantiles[0.75].predict_one({"a": 2.0})
+    assert q25 < q75  # monotone
+    pred_strong = model.predict_one({"a": 2.0})  # far from zero: whole interval one side
+    pred_weak = model.predict_one({"a": 0.0})    # at zero: interval straddles -> abstain
+    assert pred_strong != 0.0
+    assert pred_weak == 0.0
+
+
+def test_ev_tree_captures_a_kink_a_linear_ev_model_cannot() -> None:
+    """2026-07-21 model review: kind='ev_tree' swaps the EV quantile heads'
+    global linear fit for a Hoeffding tree with a quantile-loss linear model AT
+    THE LEAF (leaf_prediction='model') — tree splits capture nonlinear
+    structure that a single global linear model (kind='ev') cannot, while
+    keeping the same pessimistic-quantile decision rule."""
+    rng = np.random.default_rng(2)
+
+    def sample():
+        a = rng.uniform(-1, 1)
+        # a sharp kink: slope 1x below 0, slope 6x above 0 (in bps of return)
+        y = (6 * a if a > 0 else 1 * a) * 1e-4 + rng.normal(scale=0.05e-4)
+        return a, y
+
+    linear_model = OnlineModel(kind="ev")
+    tree_model = OnlineModel(kind="ev_tree")
+    for _ in range(6000):
+        a, y = sample()
+        linear_model.learn_one({"a": a}, y)
+        tree_model.learn_one({"a": a}, y)
+
+    # score held-out points on the steep (a>0) side, where a single global
+    # linear fit (forced to also fit the shallow a<0 side) systematically
+    # under-predicts magnitude — the tree can split and fit each side exactly.
+    probe_as = [0.3, 0.5, 0.7, 0.9]
+    truth = [6 * a * 1e-4 for a in probe_as]
+    lin_err = sum(abs(linear_model.predict_one({"a": a}) - t)
+                  for a, t in zip(probe_as, truth, strict=True))
+    tree_err = sum(abs(tree_model.predict_one({"a": a}) - t)
+                   for a, t in zip(probe_as, truth, strict=True))
+    assert tree_err < lin_err, (tree_err, lin_err)
+
+
 def _quote(ts_s: float, mid: float) -> Quote:
     return Quote(
         symbol="BTC/USD", ts_ns=int(ts_s * S), bid=mid - 1, ask=mid + 1, bid_size=1, ask_size=1
