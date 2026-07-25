@@ -33,6 +33,11 @@ from signals.evaluation import SymbolScore, evaluate
 from signals.features.engine import MICRO_FEATURES, FeatureConfig
 
 TRACKED = ["NVDA", "AAPL"]  # always shown + named as candidates (the 07-10 finding)
+DECISION_N = 15             # pre-registered decision point (RESEARCH 2026-07-16)
+# Within-day phase noise a single-phase deployment feels, measured per name on the
+# net(day, phase) matrix (RESEARCH 2026-07-17). Used for the amended bar
+# σ′ = sqrt(σ² + σ_ph²) so the tally can't look better than a deployment would.
+PHASE_SIGMA = {"NVDA": 1.25, "AAPL": 0.83}
 DISPLAY_N = 14              # rows in the Telegram table (top movers by net + TRACKED)
 HORIZON_S = 5.0
 DEAD_ZONE_BPS = 4.0  # the flagship config's selectivity bar
@@ -77,7 +82,12 @@ def capture_line(root: Path, db: Path) -> str:
         st = json.loads((root / "data" / "status_stocks.json").read_text())
     except (OSError, ValueError):
         return f"capture: db {db.stat().st_size / 1e6:,.0f}MB (no status file)"
-    events, rows = st.get("events", 0), st.get("rows", 0)
+    # stocks_live.py writes `rows_written`; stocks_alerts.read_status normalises it
+    # to `rows`, this reads the raw file — accept both or every night reports
+    # "0 rows, unwritten 19,912,881 ⚠", a false alarm of exactly the kind this
+    # message exists to avoid (caught in the 2026-07-25 dry run, before sending).
+    events = st.get("events", 0)
+    rows = st.get("rows_written", st.get("rows", 0))
     unwritten = max(0, events - rows)
     warn = ""
     if unwritten > 1000 or st.get("dropped", 0) or st.get("reconnects", 0) > 2:
@@ -322,7 +332,8 @@ def cumulative_tally(history_path: Path, today: dict[str, dict]) -> str:
             if r.get("config") == CONFIG_ID:
                 rows.append(r)
     rows.append({"result": today})  # today isn't in history yet (appended after send)
-    lines = []
+    lines: list[str] = []
+    decided: list[tuple[str, float]] = []
     for sym in TRACKED:
         nets = [r["result"].get(sym, {}).get("net_bps") for r in rows]
         nets = [v for v in nets if v is not None and v == v]  # drop None/NaN sessions
@@ -335,12 +346,39 @@ def cumulative_tally(history_path: Path, today: dict[str, dict]) -> str:
         green = sum(1 for v in nets if v > 0)
         sdstr = f"{sd:.1f}" if sd == sd else "  —"
         rstr = f"{ratio:+.2f}" if ratio == ratio else "  — "
+        # Amended bar (RESEARCH 2026-07-17): a deployment running ONE sampling
+        # phase also carries within-day phase noise, so the honest denominator is
+        # σ′ = sqrt(σ² + σ_ph²), not σ. Reported alongside the raw ratio so the
+        # bar can't quietly get easier.
+        sp = PHASE_SIGMA.get(sym, 0.0)
+        sd_adj = (sd ** 2 + sp ** 2) ** 0.5 if sd == sd else float("nan")
+        adj = mean / sd_adj if sd_adj and sd_adj == sd_adj else float("nan")
+        astr = f"{adj:+.2f}" if adj == adj else "  — "
+        if n >= DECISION_N and adj == adj:
+            decided.append((sym, adj))
         lines.append(f"{sym:<5} {mean:>+5.1f}  ±σ{sdstr:>5}  net/σ {rstr:>6}"
-                     f"  ({green}/{n} grn, n={n})")
+                     f"  net/σ′ {astr:>6}  ({green}/{n} grn, n={n})")
     if not lines:
         return ""
-    return ("cumulative across sessions (want net/σ &gt; 1 — none has yet):\n"
-            f"<pre>{chr(10).join(lines)}</pre>")
+    out = ("cumulative across sessions (pre-registered bar: net/σ′ \N{GREATER-THAN OR EQUAL TO} 1"
+           f" at n={DECISION_N}):\n<pre>{chr(10).join(lines)}</pre>")
+    if decided:
+        clears = [s for s, a in decided if a >= 1.0]
+        ge = "\N{GREATER-THAN OR EQUAL TO}"
+        if clears:
+            out += (
+                f"\n\N{WARNING SIGN} <b>DECISION POINT REACHED</b> (n{ge}{DECISION_N}): "
+                f"{', '.join(clears)} clear net/σ′ {ge} 1 \N{EM DASH} the pre-registered "
+                "rule says CONTINUE research. NB this is the BACKTEST tally; the one "
+                "live real-money test (2026-07-21, 356 fills) lost money at 47.5% "
+                "gross direction. Both facts are true; a human decides."
+            )
+        else:
+            out += (
+                f"\n\N{CHEQUERED FLAG} decision point (n{ge}{DECISION_N}): no name clears "
+                f"net/σ′ {ge} 1 \N{EM DASH} the pre-registered rule says ARCHIVE."
+            )
+    return out
 
 
 def backfill(root: Path, dbs: list[str], batch: int = BATCH_SYMBOLS) -> None:
