@@ -25,7 +25,6 @@ import datetime as dt
 import glob
 import json
 import statistics as stats
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -52,25 +51,41 @@ CONFIG_ID = (f"ev_nomicro3_{HORIZON_S:g}s_dz{DEAD_ZONE_BPS:g}"
 
 
 def account_line(root: Path) -> str:
-    """Both virtual books of the ONE shared paper account (signals.books):
-    stocks = $50k + its own cumulative P&L (flat by digest time — EOD flatten
-    already ran), crypto = the remainder, broken into cash + current holdings
-    value (crypto runs 24/7 and is often NOT flat)."""
-    from signals.books import crypto_balance, read_stocks_pnl, stocks_balance
+    """The stocks virtual book (signals.books): $50k + its own cumulative P&L.
+
+    The crypto book is deliberately NOT reported: the crypto pipeline was
+    stopped 2026-07-21, so its data/status.json is frozen forever — printing a
+    balance off a dead status file is worse than printing nothing. If crypto
+    ever comes back, restore the crypto_balance() half from git history."""
+    from signals.books import read_stocks_pnl, stocks_balance
     try:
-        st = json.loads((root / "data" / "status.json").read_text())
-        age = time.time() - st.get("ts", 0)
-        fresh = "" if age < 600 else " ⚠stale"
-        spnl = read_stocks_pnl(root)
-        stocks_bal = stocks_balance(spnl)
-        crypto_bal = crypto_balance(st.get("equity", 0), spnl)
-        crypto_holdings = sum(p.get("value", 0.0) for p in st.get("positions", {}).values())
-        crypto_cash = crypto_bal - crypto_holdings
-        return (f"stocks book ${stocks_bal:,.0f} · "
-                f"crypto book ${crypto_bal:,.0f} "
-                f"(cash ${crypto_cash:,.0f} + holdings ${crypto_holdings:,.0f}){fresh}")
+        pnl = read_stocks_pnl(root)
+        return f"stocks book ${stocks_balance(pnl):,.0f} (P&L ${pnl:+,.2f}, no live orders)"
     except (OSError, ValueError):
         return "paper acct n/a"
+
+
+def capture_line(root: Path, db: Path) -> str:
+    """One line proving today's capture actually worked.
+
+    This message is the ONLY scheduled Telegram message the project sends
+    (2026-07-25 alert cut) — stocks_alerts.py is now silent unless something is
+    broken, so this line carries the 'everything is fine' signal that the
+    hourly heartbeat used to. If this digest stops arriving, that is itself the
+    alarm."""
+    try:
+        st = json.loads((root / "data" / "status_stocks.json").read_text())
+    except (OSError, ValueError):
+        return f"capture: db {db.stat().st_size / 1e6:,.0f}MB (no status file)"
+    events, rows = st.get("events", 0), st.get("rows", 0)
+    unwritten = max(0, events - rows)
+    warn = ""
+    if unwritten > 1000 or st.get("dropped", 0) or st.get("reconnects", 0) > 2:
+        warn = " \N{WARNING SIGN}"
+    return (f"capture: {events:,} events \N{MIDDLE DOT} {rows:,} rows \N{MIDDLE DOT} "
+            f"unwritten {unwritten:,} \N{MIDDLE DOT} dropped {st.get('dropped', 0):,} "
+            f"\N{MIDDLE DOT} reconnects {st.get('reconnects', 0)} \N{MIDDLE DOT} "
+            f"db {db.stat().st_size / 1e6:,.0f}MB{warn}")
 
 
 def excluded_days(root: Path) -> set[str]:
@@ -449,6 +464,7 @@ def main() -> None:
     )
     if cum:
         msg += f"\n{cum}"
+    msg += f"\n{capture_line(root, db)}"
 
     if args.no_send:
         print(msg)

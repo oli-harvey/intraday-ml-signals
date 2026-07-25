@@ -4,12 +4,12 @@ The regression that matters: on 2026-07-13 the 30-symbol capture stalled its wri
 for five hours (rows frozen, queue at cap, 34 reconnects) and nothing told us. These
 tests pin the alerts that would have caught it.
 
-2026-07-20 messaging review: the live heartbeat used to mix backtest numbers
-(windowed/per-quote trade counts) with the REAL paper book in one dense,
-unlabelled message — confusing, and the direct cause of "what is windowed vs
-paper real fills?". position_line() is now ops-only (the real book);
-research_summary() is a short, clearly-labelled backtest comparison used only
-in the once-a-day close summary, not the live heartbeat.
+2026-07-25 alert cut (Oli: "lots of useless alerts"): this script is now
+PROBLEMS ONLY. The session-open, session-close and hourly heartbeat messages
+are gone — ~9 predictable messages per weekday whose only job was proving the
+alerting worked, a job the one nightly digest now does via its capture line.
+The tests below pin BOTH halves of that contract: a healthy session is
+completely silent, and every genuine failure still speaks.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from stocks_alerts import (  # noqa: E402
     detect,
     in_session,
     position_line,
-    research_summary,
     shadow_descriptor,
 )
 
@@ -54,10 +53,8 @@ def _paper(**kw):
 
 
 def _traded(**kw):
-    return _state(
-        sim_trades=214, sim_avg_bps=2.66, pq_trades=3764, pq_avg_bps=1.11,
-        paper=_paper(), **kw,
-    )
+    kw.setdefault("paper", _paper())  # callers may pass their own book state
+    return _state(sim_trades=214, sim_avg_bps=2.66, pq_trades=3764, pq_avg_bps=1.11, **kw)
 
 
 def test_position_line_reports_the_real_book_not_the_backtest():
@@ -103,57 +100,45 @@ def test_position_line_flags_halt_and_reconciliations():
     assert "HALTED" in line and "2 reconciliation close(s)" in line
 
 
-def test_research_summary_is_clearly_labelled_and_separate():
-    """The whole point of the split: this must say plainly that it is NOT
-    real trades, and must never appear in the live heartbeat (only the
-    once-daily close)."""
-    line = research_summary(_traded())
-    assert "backtest, not real trades" in line
-    assert "windowed 214 tr avg +2.66bps" in line
-    assert "per-quote 3764 tr avg +1.11bps" in line
-
-
 def test_position_line_never_contains_the_research_label():
-    """The heartbeat is built from position_line() alone (main() appends it
-    directly, with no research_summary() call) — assert that at the unit
-    level: position_line()'s own output can never carry the backtest label,
-    so wiring it into the heartbeat can't accidentally leak research numbers."""
+    """position_line() is the REAL book only. Research numbers ('is there an
+    edge') belong to the nightly digest and must never leak into an ops
+    message built from this function."""
     assert "backtest" not in position_line(_traded()).lower()
 
 
-def test_close_summary_leads_with_the_real_position_and_a_short_research_line():
-    msgs = detect(_traded(), _traded(state="closed"))
-    assert len(msgs) == 1
-    assert "session close" in msgs[0]
-    assert "34 real trades" in msgs[0]
-    assert "backtest, not real trades" in msgs[0]
+def test_a_normal_session_is_completely_silent():
+    """2026-07-25 alert cut: no session-open, no close summary, no heartbeat.
+    A healthy day sends NOTHING — the nightly digest carries the 'all fine'
+    signal. Every transition through a normal session must stay quiet."""
+    assert detect({"state": "closed"}, _state()) == []          # market opens
+    assert detect(_state(), _state(events=2000, rows=1990)) == []  # mid-session
+    assert detect(_state(), _state(state="closed")) == []        # market closes
+    assert detect(_traded(), _traded(state="closed")) == []      # even with a real book
 
 
-def test_session_open_announced_once():
-    msgs = detect({"state": "closed"}, _state())
-    assert any("session open" in m for m in msgs)
-    # already open -> silent
-    assert detect(_state(), _state(events=2000, rows=1990)) == []
+def test_loss_cap_halt_alerts_once():
+    """If real orders are ever switched back on, hitting the daily loss cap is
+    a state a human must know about — but only the first time."""
+    msgs = detect(_traded(), _traded(paper=_paper(halted=True)))
+    assert any("HALTED" in m for m in msgs), msgs
+    assert any("34 real trades" in m for m in msgs)  # carries the book context
+    # already halted -> silent
+    assert not any("HALTED" in m for m in
+                   detect(_traded(paper=_paper(halted=True)),
+                          _traded(paper=_paper(halted=True))))
 
 
-def test_session_open_escapes_the_config_string():
-    """2026-07-20: config carries a literal '<' ('spread<2bp'). Telegram's HTML
-    parser reads '<2bp' as a broken start tag and 400s the WHOLE message — and
-    because that exception used to propagate out of main() before the state
-    file was written, the cron retried and failed on this exact message every
-    5 minutes for hours (184 identical crashes, zero stocks messages sent).
-    The config string MUST be HTML-escaped before it reaches a <b>...</b>
-    message sent with parse_mode=HTML."""
-    (msg,) = detect({"state": "closed"}, _state(config="ev no-micro 5s dz4 spread<2bp"))
-    assert "spread&lt;2bp" in msg
-    assert "spread<2bp" not in msg  # the raw, Telegram-breaking form must be gone
-
-
-def test_session_open_reports_real_orders_when_trading_is_on():
-    msgs = detect({"state": "closed"}, _state(paper={"trades": 0}))
-    assert any("REAL paper orders" in m for m in msgs)
-    msgs = detect({"state": "closed"}, _state())  # no paper key -> shadow only
-    assert any("no real orders" in m for m in msgs)
+def test_order_errors_and_reconciliations_alert_on_the_way_up():
+    """A reconciliation close means a position was closed OUTSIDE the normal
+    order path (the 07-20 vanishing-ETH bug) — it must never pass silently."""
+    msgs = detect(_traded(), _traded(paper=_paper(order_errors=3)))
+    assert any("order errors: 3" in m for m in msgs)
+    msgs = detect(_traded(), _traded(paper=_paper(reconciliations=2)))
+    assert any("reconciliation close(s): 2" in m for m in msgs)
+    # steady state -> silent
+    assert detect(_traded(paper=_paper(order_errors=3)),
+                  _traded(paper=_paper(order_errors=3))) == []
 
 
 def test_writer_stall_fires_the_alarm():
@@ -189,13 +174,6 @@ def test_queue_saturation_warns_on_the_way_up_only():
 def test_reconnects_warn_when_climbing():
     msgs = detect(_state(reconnects=0), _state(reconnects=34))
     assert any("reconnects: 34" in m for m in msgs)
-
-
-def test_close_summary_reports_unwritten_rows():
-    msgs = detect(_state(), _state(state="closed", events=9_000_000, rows=8_600_000,
-                                   reconnects=34, q_hwm=QUEUE_CAP))
-    assert len(msgs) == 1 and "session close" in msgs[0]
-    assert "400,000" in msgs[0]  # unwritten = events - rows, surfaced honestly
 
 
 def test_log_line_matches_both_capture_processes():

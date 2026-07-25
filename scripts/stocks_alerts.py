@@ -10,18 +10,29 @@ summary keeps a short, clearly-labelled backtest line for same-day
 comparison, since "how did the real book do vs. the sim today" is a fair
 end-of-day question.
 
-On 2026-07-13 the 30-symbol capture spent five hours in a writer death-spiral
-(queue pinned at its cap, 34 websocket reconnects, rows_written frozen) and
-nobody knew until it was looked at by hand. These are the alerts that would
-have caught it in five minutes:
-  📈 session open        capture up, N symbols, real orders on/off
+⚠️ PROBLEMS ONLY (2026-07-25, Oli: "lots of useless alerts"). This script is
+now silent unless something is WRONG. It sends nothing on a normal day:
   🔴 capture DOWN        in-session but no recorder process
   🔴 writer STALLED      rows_written frozen while events climb  <-- the 07-13 failure
   ⚠️  queue saturating   backlog near the cap (producer about to block the WS)
   ⚠️  reconnects         websocket dropping (usually the symptom of a stalled writer)
   🟢 recovered           back to healthy after any of the above
-  🏁 session close       position + P&L + a short backtest comparison
-  💓 heartbeat           hourly: position + P&L, so you know it's alive
+  ⚠️  disk filling       capture writes ~350MB/session
+
+REMOVED and why: the hourly 💓 heartbeat, the 📈 session-open and 🏁
+session-close messages. With real orders off (2026-07-21) the heartbeat's
+position report was a permanent "no real orders configured" and the rest was
+capture stats — ~9 predictable messages per weekday whose only real job was
+proving the alerting still worked. That job now belongs to the ONE nightly
+research digest (equities_digest.py), which carries a capture-health line:
+if it doesn't arrive, something is wrong. Silence here means healthy; the
+failure modes above are all still detected, and they are the ones that
+actually cost data.
+
+On 2026-07-13 the 30-symbol capture spent five hours in a writer death-spiral
+(queue pinned at its cap, 34 websocket reconnects, rows_written frozen) and
+nobody knew until it was looked at by hand — that is what these alerts exist
+for, and all of them survive this cut.
 
 Cron (MERGE), every 5 min on weekdays; it no-ops outside market hours:
     */5 * * * 1-5 cd $HOME/intraday-ml-signals && .venv/bin/python \
@@ -45,7 +56,6 @@ from signals import telegram as tg
 
 QUEUE_CAP = 250_000          # record.py's asyncio.Queue maxsize
 QUEUE_WARN = 0.5             # warn once the backlog passes this fraction of the cap
-HEARTBEAT_MIN = 60           # minutes between "still alive" messages
 DISK_WARN_PCT = 85           # capture writes ~350MB/day; warn before the disk kills it
 # Matches BOTH capture processes' progress line: record.py prints `rows_written=`,
 # stocks_live.py prints `rows=`. The old pattern only matched record.py, so when
@@ -188,20 +198,6 @@ def position_line(cur: dict) -> str:
     )
 
 
-def research_summary(cur: dict) -> str:
-    """A SHORT, clearly-labelled backtest comparison for the end-of-day close
-    only — full detail (per-symbol, phase-swept, cumulative tally) lives in
-    the nightly equities_digest.py. This is deliberately not in the live
-    heartbeat: two different questions ('is there an edge' vs 'what did the
-    real book do') must never share a message."""
-    return (
-        "\N{MICROSCOPE} <b>backtest, not real trades</b> (full detail: nightly digest)\n"
-        f"windowed {cur.get('sim_trades', 0)} tr avg {cur.get('sim_avg_bps', float('nan')):+.2f}bps"
-        f" \N{MIDDLE DOT} per-quote {cur.get('pq_trades', 0)} tr avg "
-        f"{cur.get('pq_avg_bps', float('nan')):+.2f}bps"
-    )
-
-
 def db_size_mb(root: Path) -> float:
     dbs = sorted((root / "data").glob("equities_2*.duckdb"))
     return dbs[-1].stat().st_size / 1e6 if dbs else 0.0
@@ -218,34 +214,9 @@ def detect(prev: dict, cur: dict) -> list[str]:
     out: list[str] = []
     was, now = prev.get("state"), cur["state"]
 
-    if now == "open" and was in (None, "closed"):
-        # tg.esc is NOT optional: config carries a literal '<' (e.g.
-        # "spread<2bp") and Telegram's HTML parser reads "<2bp" as a broken
-        # start tag, 400s the WHOLE message, and — because that exception used
-        # to propagate before the state file was written — the transition
-        # never got marked "open", so the cron retried and failed on this
-        # exact message every 5 minutes forever. This happened: 184 identical
-        # crashes, zero stocks messages sent, the whole morning.
-        cfg = tg.esc(cur.get("config", ""))
-        orders_note = "no real orders" if not cur.get("paper") else "REAL paper orders"
-        out.append(
-            f"\N{CHART WITH UPWARDS TREND} <b>stocks session open</b> — 30 symbols streaming\n"
-            f"shadow book: {cfg} ({orders_note})"
-        )
-    elif now == "closed" and was in ("open", "down", "stalled"):
-        out.append(
-            f"\N{CHEQUERED FLAG} <b>stocks session close</b>\n"
-            f"{position_line(cur)}\n"
-            f"{research_summary(cur)}\n"
-            f"\N{EM DASH}\ncapture: events {cur['events']:,} \N{MIDDLE DOT} "
-            f"rows {cur['rows']:,} \N{MIDDLE DOT} "
-            f"unwritten {max(0, cur['events'] - cur['rows']):,} \N{MIDDLE DOT} "
-            f"dropped {cur.get('dropped', 0):,}\n"
-            f"reconnects {cur['reconnects']} \N{MIDDLE DOT} peak queue "
-            f"{cur['q_hwm']:,}/{QUEUE_CAP:,} \N{MIDDLE DOT} db {cur['db_mb']:.0f}MB"
-        )
-        return out  # close summary stands alone
-
+    # No session-open / session-close / heartbeat messages: a normal day is
+    # SILENT here and is reported once by the nightly digest instead. Only
+    # things that need a human stay below.
     if now == "down" and was != "down":
         out.append("\N{LARGE RED SQUARE} <b>stocks capture DOWN</b> — "
                    "no recorder process during market hours")
@@ -277,6 +248,24 @@ def detect(prev: dict, cur: dict) -> list[str]:
             f"\N{WARNING SIGN} disk {cur['disk_pct']:.0f}% full — run "
             "scripts/archive_sessions.py (or check logs/) before capture dies"
         )
+
+    # Real-book problems. Silent while --trade is off (paper is None); if it is
+    # ever switched back on, these are the states that need a human — reported
+    # once on the way up, never as a recurring status ping.
+    paper, was_paper = cur.get("paper") or {}, prev.get("paper") or {}
+    if paper:
+        if paper.get("halted") and not was_paper.get("halted"):
+            out.append(f"\N{NO ENTRY} <b>stocks entries HALTED</b> (daily loss cap)\n"
+                       f"{position_line(cur)}")
+        if paper.get("order_errors", 0) > was_paper.get("order_errors", 0):
+            out.append(f"\N{WARNING SIGN} stocks order errors: "
+                       f"{paper['order_errors']} (was {was_paper.get('order_errors', 0)})")
+        if paper.get("reconciliations", 0) > was_paper.get("reconciliations", 0):
+            out.append(
+                f"\N{WARNING SIGN} stocks reconciliation close(s): "
+                f"{paper['reconciliations']} (was {was_paper.get('reconciliations', 0)}) — "
+                "a position was closed outside the normal order path"
+            )
     return out
 
 
@@ -320,21 +309,9 @@ def main() -> None:
         state = "open"
 
     cur = {**log, "state": state, "db_mb": db_size_mb(root), "ts": time.time(),
-           "disk_pct": disk_used_pct(root), "last_beat": prev.get("last_beat", 0)}
+           "disk_pct": disk_used_pct(root)}
 
     msgs = detect(prev, cur)
-
-    # heartbeat so silence is informative, not ambiguous — position report only,
-    # no backtest numbers (those belong to the nightly digest, not a live ping)
-    if state == "open" and time.time() - prev.get("last_beat", 0) > HEARTBEAT_MIN * 60:
-        secs = max(1, log["up_s"])
-        msgs.append(
-            f"\N{BEATING HEART} <b>stocks live</b>\n{position_line(cur)}\n"
-            f"\N{EM DASH}\ncapture ok: {log['events']:,} events "
-            f"({log['events'] / secs:,.0f}/s) \N{MIDDLE DOT} queue {log['q_hwm']:,} "
-            f"\N{MIDDLE DOT} reconnects {log['reconnects']}"
-        )
-        cur["last_beat"] = time.time()
 
     if args.no_send:  # a dry run must NOT consume the transitions it is previewing
         for m in msgs:
