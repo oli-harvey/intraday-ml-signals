@@ -1177,3 +1177,45 @@ holds across seven model families and is a property of the signal-vs-cost struct
 of the learner.** Active levers remaining: none. The pre-registered kill/continue rule and
 the capture/shadow-book tally continue unattended; real-money strategy work has moved to
 the $100 long-only study (07-21 evening entry).
+
+## 2026-07-26 — the pre-registered n=15 decision point ARRIVED, and it says CONTINUE. The live money test says STOP. Both are true.
+
+Surfaced by accident: an alert-noise cleanup (Oli: "lots of useless alerts") required a dry
+run of the nightly digest, which revealed the rolling history had quietly reached **n=15
+clean sessions** — the decision point pre-registered on 2026-07-16, before any of this data
+existed. The tally, under the amended bar (σ′ = sqrt(σ² + σ_ph²), RESEARCH 07-17):
+
+| | mean nightly phase-mean net | σ (across days) | net/σ | **net/σ′** | green |
+|---|---|---|---|---|---|
+| NVDA | +2.6 | 1.9 | +1.38 | **+1.15** | **15/15** |
+| AAPL | +2.3 | 2.1 | +1.08 | **+1.01** | 14/15 |
+
+**Both tracked names clear the pre-registered bar. By the rule as written, the verdict is
+CONTINUE.** NVDA is positive on every one of 15 sessions.
+
+**And the live test contradicts it.** On 2026-07-21 the same config traded 356 real paper
+round trips and lost -$47.49 at **47.5% gross direction** — a coin flip — with prediction
+magnitude anti-informative. That is one session against fifteen, but it is the only one
+measured with real fills instead of a cost model.
+
+**No action taken, and that is deliberate.** The honest reading is that these two results
+are not actually in conflict — they measure different things, and the gap between them IS
+the finding:
+- The backtest tally says the *phase-mean net across a whole session* is reliably positive.
+- The live test says that *acting on it, trade by trade, at real fill latency* is not.
+- The known mechanism connecting them: entry latency (1-2.4s of a 5s horizon, RESEARCH
+  07-21) and the ~1.5bp toll. The tally's cost model charges the spread but cannot charge
+  what it does not simulate — the signal decaying while the order is in flight.
+
+So the pre-registered rule has done its job (it stopped the research from being abandoned
+on a hunch, and from being deployed on one) and is now superseded by better evidence. **The
+rule's CONTINUE applies to RESEARCH, which continues free and unattended (capture + shadow
+book + nightly screen). It is not a mandate to trade money, and nothing has been
+re-enabled.** Real orders stay off (07-21) until something clears the bar *with real fills*,
+which is a different and harder test than the one just passed.
+
+The digest now computes σ′ per name, states the bar, and announces the decision point with
+both facts side by side, so this never depends on someone remembering to check. Also fixed
+before it ever sent: `capture_line` read `rows` while the capture writes `rows_written`,
+which would have put a false "unwritten 19.9M ⚠" on every nightly message — caught by
+dry-running the real message instead of trusting it.
