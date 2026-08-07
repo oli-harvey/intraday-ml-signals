@@ -439,7 +439,13 @@ def main() -> None:
         print("no equities DB found — nothing to report (weekend/holiday/capture failed)")
         return
     day = db.stem.replace("equities_", "")
-    if not args.db and already_recorded(root, day):
+    # The guard is UNCONDITIONAL. It used to be skipped whenever --db was passed
+    # explicitly, so `--db <an already-scored session>` silently appended a second
+    # row and double-counted that day in the tally. That happened: a 2026-07-25
+    # dry run of 07-24 put a duplicate into the history (found 08-07, removed,
+    # tally recomputed). --backfill is the supported way to score past sessions;
+    # it keeps its own dedupe.
+    if already_recorded(root, day):
         print(f"{day}: already scored for {CONFIG_ID} — nothing new to report")
         return
 
@@ -505,17 +511,22 @@ def main() -> None:
     msg += f"\n{capture_line(root, db)}"
 
     if args.no_send:
+        # A dry run must NOT mutate the record it is previewing (the same rule
+        # stocks_alerts.py already follows for its state file). Previewing the
+        # message used to append a history row, so checking what the bot would
+        # say corrupted the tally it was reporting.
         print(msg)
-    else:
-        creds = tg.load_env(args.env)
-        button = None
-        if creds.get("DASHBOARD_BASE_URL"):
-            button = tg.dashboard_button(f"{creds['DASHBOARD_BASE_URL']}/stocks_app.html")
-        # tg.send() never raises — a send failure (Telegram outage, transient
-        # network error) must not cost the session a row in the rolling tally:
-        # the digest only scores the LATEST db, so a lost row here would
-        # silently create a permanent gap until someone re-runs --backfill.
-        tg.send(creds, msg, reply_markup=button)
+        return
+
+    creds = tg.load_env(args.env)
+    button = None
+    if creds.get("DASHBOARD_BASE_URL"):
+        button = tg.dashboard_button(f"{creds['DASHBOARD_BASE_URL']}/stocks_app.html")
+    # tg.send() never raises — a send failure (Telegram outage, transient
+    # network error) must not cost the session a row in the rolling tally:
+    # the digest only scores the LATEST db, so a lost row here would
+    # silently create a permanent gap until someone re-runs --backfill.
+    tg.send(creds, msg, reply_markup=button)
 
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a") as fh:
