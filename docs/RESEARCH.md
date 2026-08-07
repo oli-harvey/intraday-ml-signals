@@ -1219,3 +1219,59 @@ both facts side by side, so this never depends on someone remembering to check. 
 before it ever sent: `capture_line` read `rows` while the capture writes `rows_written`,
 which would have put a false "unwritten 19.9M ⚠" on every nightly message — caught by
 dry-running the real message instead of trusting it.
+
+## 2026-08-07 — RESOLVED: the edge is real, and it is gone in 500 milliseconds. Intraday track closed.
+
+Two carefully-measured results had been contradicting each other for two weeks: a phase-swept
+backtest saying NVDA +2.6bps/session, net/σ′ 1.11, positive on 22 of 23 sessions **and not
+decaying as n grew** (the first ratio in this project's history to survive that test), versus
+one live session of 356 real fills that lost -$47.49 at 47.5% gross direction. `scripts/
+latency_sweep.py` re-prices every entry at the mid actually available L seconds after the
+signal — the measured fill latency on this account is 1.0-2.4s — holding the exit at
+signal+horizon. L=0 reproduces the standard sim exactly (130 trades, +3.1536bps, verified
+before trusting anything else). 6 sessions, 8 phases:
+
+| sym | L=0 | L=0.5s | L=1.0s | L=1.5s | L=2.0s | L=2.4s |
+|-----|-----|--------|--------|--------|--------|--------|
+| NVDA | **+2.71** (6/6 green) | −1.98 | −1.94 | −1.56 | −1.65 | −1.69 (0/6) |
+| AAPL | **+1.74** (6/6 green) | −1.43 | −1.44 | −1.10 | −1.46 | −1.21 (0/6) |
+
+**The entire edge is destroyed by HALF A SECOND of delay, and the damage does not grow after
+that.** −4.7bps (NVDA) / −3.2bps (AAPL) arrives by L=0.5s and is then flat out to 2.4s. This
+is not a cost that scales with latency; it is a cliff.
+
+**Both measurements were right.** The latency-adjusted backtest lands in the same place as
+the live book: modelled NVDA −1.65..−1.94 and AAPL −1.10..−1.46 vs live NVDA −0.81, AAPL
+−1.13, all trades −1.53bps. The sim was never flattering the strategy's *direction* — it was
+entering at a price that no longer exists by the time an order can reach the exchange.
+
+**Mechanism, stated plainly:** the signal fires on a momentary quote dislocation and the
+dislocation reverts within ~500ms. The edge IS the first half-second. Anything slower than
+that is trading the aftermath, which is why live direction measured 47.5% — a coin flip —
+while the same model scored d-best +0.057 offline. Nothing is wrong with the model.
+
+**This also closes the one remaining hope (a longer horizon to dilute a fixed latency cost),
+by arithmetic on two established results rather than a new run:** the entry penalty is a
+property of the ENTRY price, essentially independent of how long you then hold, while
+RESEARCH 07-15/16 measured 30s-horizon net at only +0.2..+0.4bps with instantaneous fills.
++0.3 − 4.7 is deeply negative. There is no horizon at which this reaches profitability
+through a retail broker path.
+
+**Verdict: the intraday equities track is CLOSED — not by a wall, but by an explanation.**
+The pre-registered rule's CONTINUE (n=15, and still 1.11 at n=23) was a verdict on a number
+that this experiment now shows is unreachable: it was measuring an edge that exists only
+inside a latency budget we do not have and cannot buy at this scale. That is a better
+outcome than the ambiguity it replaces, and it retires the question honestly rather than
+leaving it to accrue sessions forever.
+
+**What the project actually produced:** a methodology that refused six consecutive false
+positives (cadence, phase, horizon, spread-gate, cross-sectional, model-family) and then, when
+a result finally DID survive every statistical test it could throw at it, went and found the
+physical reason it still wouldn't make money. The negative result is trustworthy in both
+directions, which was the point.
+
+**Consequent decisions:** real orders stay off (since 07-21). Daily capture and the nightly
+screen are now consumerless — the question they fed is answered — and should stop; keeping
+them running would be accruing evidence for a decision already made. Real-money work moves
+to the $100 long-only QQQ trend filter (RESEARCH 07-21 evening), which depends on none of
+this.
