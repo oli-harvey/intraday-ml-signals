@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import json
 import ssl
-import urllib.error
 import urllib.parse
 import urllib.request
 import zoneinfo
