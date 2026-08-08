@@ -66,3 +66,16 @@ def test_a_realistic_crossover_sequence_trades_exactly_twice():
     path = [(95, False), (105, False), (108, True), (98, True), (94, False)]
     actions = [decide(c, 100.0, h) for c, h in path]
     assert actions == [None, "buy", None, "sell", None]
+
+
+def test_base_url_is_normalised_whether_or_not_it_ends_in_v2():
+    """This deployment's .env sets ALPACA_BASE_URL=.../v2 while the SDK default
+    omits it. Unnormalised, every request became /v2/v2/... and 404'd — and the
+    old position lookup read a 404 as 'flat', which would have re-bought $100
+    every day. Caught on the server before the first live firing."""
+    from trend_bot import normalise_base
+    want = "https://paper-api.alpaca.markets"
+    assert normalise_base("https://paper-api.alpaca.markets/v2") == want
+    assert normalise_base("https://paper-api.alpaca.markets/v2/") == want
+    assert normalise_base("https://paper-api.alpaca.markets/") == want
+    assert normalise_base(want) == want

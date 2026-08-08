@@ -127,14 +127,28 @@ def market_is_closing(creds: dict[str, str], base: str,
     return timedelta(0) <= (close_at - now) <= timedelta(minutes=within_min)
 
 
+def normalise_base(base: str) -> str:
+    """Accept a base URL with or without a trailing /v2 (this deployment's .env
+    has it; the SDK default does not) and return it WITHOUT.
+
+    Not cosmetic: '.../v2' + '/v2/positions' 404s, and the old position lookup
+    read any 404 as 'flat' — so a misconfigured base made the bot believe it
+    held nothing and re-buy every single day. Caught on the server before the
+    first live firing (2026-08-08)."""
+    return base.rstrip("/").removesuffix("/v2")
+
+
 def position_qty(creds: dict[str, str], base: str, symbol: str = SYMBOL) -> float:
-    try:
-        pos = _req(f"{base}/v2/positions/{symbol}", creds)
-        return float(pos.get("qty", 0.0))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return 0.0  # no position is a normal state, not an error
-        raise
+    """Qty held, from the LIST endpoint.
+
+    Deliberately not /v2/positions/{symbol}: that 404s for 'no position', which
+    is indistinguishable from a 404 caused by a bad URL or a revoked key, and
+    guessing 'flat' in those cases means buying again. The list endpoint returns
+    200 with an array, so any error here is a real error and propagates."""
+    for p in _req(f"{base}/v2/positions", creds):
+        if p.get("symbol") == symbol:
+            return float(p.get("qty", 0.0))
+    return 0.0
 
 
 def submit(creds: dict[str, str], base: str, side: str, *, notional: float | None = None,
@@ -176,7 +190,7 @@ def main() -> None:
     missing = [k for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY") if not creds.get(k)]
     if missing:
         raise SystemExit(f"missing broker credentials: {', '.join(missing)}")
-    base = creds.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    base = normalise_base(creds.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
     if "paper-api" not in base:
         raise SystemExit(f"refusing to run against a non-paper endpoint: {base}")
 
