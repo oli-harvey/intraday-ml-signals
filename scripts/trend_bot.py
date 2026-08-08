@@ -163,7 +163,19 @@ def main() -> None:
                          "unless --no-send is absent)")
     args = ap.parse_args()
     root = Path(args.root)
-    creds = tg.load_env(args.env)
+    # Two credential files by design: the repo .env holds the BROKER keys (never
+    # copied around), digest.env holds the Telegram creds shared with the other
+    # bots. We need both, so merge — Telegram file last, it is the one passed in.
+    def _env(path: str) -> dict[str, str]:
+        try:
+            return tg.load_env(path)
+        except OSError:
+            return {}  # a missing file is reported by the credential check below
+
+    creds = {**_env(str(root / ".env")), **_env(args.env)}
+    missing = [k for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY") if not creds.get(k)]
+    if missing:
+        raise SystemExit(f"missing broker credentials: {', '.join(missing)}")
     base = creds.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     if "paper-api" not in base:
         raise SystemExit(f"refusing to run against a non-paper endpoint: {base}")
